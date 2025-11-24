@@ -1,0 +1,259 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Courier New', monospace;
+    background: #0a0a0f;
+    color: #00FFFF;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    overflow-x: hidden;
+    overflow-y: auto;
+}
+
+.screen {
+    display: none;
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    z-index: 1;
+}
+
+.screen.active {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+
+.neon-title {
+    font-size: 3rem;
+    text-shadow: 0 0 10px currentColor, 0 0 20px currentColor, 0 0 30px currentColor;
+    margin-bottom: 1.5rem;
+    letter-spacing: 0.3rem;
+}
+
+#menu-screen {
+    text-align: center;
+    padding: 1rem 0;
+    max-height: 100vh;
+    overflow-y: auto;
+}
+
+.player-config {
+    display: flex;
+    gap: 2rem;
+    margin-bottom: 1.5rem;
+}
+
+.player-section {
+    background: rgba(255, 255, 255, 0.05);
+    padding: 1rem;
+    border-radius: 10px;
+    border: 2px solid currentColor;
+    min-width: 200px;
+}
+
+.player-section h2 {
+    margin-bottom: 0.75rem;
+    font-size: 1.3rem;
+    text-shadow: 0 0 10px currentColor;
+}
+
+.player1-color {
+    color: #00FFFF;
+}
+
+.player2-color {
+    color: #FF1493;
+}
+
+.player-section input[type="text"] {
+    width: 100%;
+    padding: 0.4rem;
+    margin-bottom: 0.75rem;
+    background: rgba(0, 0, 0, 0.5);
+    border: 1px solid currentColor;
+    color: currentColor;
+    font-family: 'Courier New', monospace;
+    font-size: 0.95rem;
+}
+
+.color-input {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.color-input label {
+    font-size: 0.85rem;
+}
+
+.color-input input[type="color"] {
+    width: 50px;
+    height: 35px;
+    border: 2px solid currentColor;
+    border-radius: 5px;
+    background: transparent;
+    cursor: pointer;
+    padding: 2px;
+    box-shadow: 0 0 10px currentColor;
+}
+
+.stats {
+    background: rgba(255, 255, 255, 0.05);
+    padding: 1rem 2rem;
+    border-radius: 10px;
+    border: 2px solid #00FFFF;
+    margin-bottom: 1.5rem;
+}
+
+.stats h3 {
+    margin-bottom: 0.75rem;
+    font-size: 1.2rem;
+}
+
+.stats p {
+    margin: 0.3rem 0;
+    font-size: 0.95rem;
+}
+
+.primary-button {
+    padding: 0.8rem 2.5rem;
+    font-size: 1.3rem;
+    background: transparent;
+    border: 3px solid #00FFFF;
+    color: #00FFFF;
+    font-family: 'Courier New', monospace;
+    cursor: pointer;
+    transition: all 0.3s;
+    text-shadow: 0 0 10px currentColor;
+    box-shadow: 0 0 20px currentColor;
+    letter-spacing: 0.2rem;
+}
+
+.primary-button:hover {
+    background: rgba(0, 255, 255, 0.2);
+    box-shadow: 0 0 30px currentColor;
+}
+
+.secondary-button {
+    padding: 0.4rem 1.2rem;
+    font-size: 0.9rem;
+    background: transparent;
+    border: 2px solid #888;
+    color: #888;
+    font-family: 'Courier New', monospace;
+    cursor: pointer;
+    transition: all 0.3s;
+    margin-top: 0.75rem;
+}
+
+.secondary-button:hover {
+    background: rgba(136, 136, 136, 0.2);
+    border-color: #aaa;
+    color: #aaa;
+}
+
+.controls-info {
+    display: flex;
+    gap: 2rem;
+    margin-top: 1.5rem;
+    font-size: 0.8rem;
+}
+
+.control-column {
+    background: rgba(255, 255, 255, 0.03);
+    padding: 0.75rem;
+    border-radius: 5px;
+    border: 1px solid rgba(0, 255, 255, 0.3);
+}
+
+.control-column h4 {
+    margin-bottom: 0.4rem;
+    font-size: 0.9rem;
+    color: #00FFFF;
+}
+
+.control-column p {
+    margin: 0.2rem 0;
+    color: #aaa;
+}
+
+/* Game Screen */
+#game-screen {
+    position: relative;
+}
+
+#game-canvas {
+    display: block;
+    background: #1a1a2e;
+}
+
+#hud {
+    position: absolute;
+    top: 0;
+    width: 100%;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1rem 2rem;
+    font-size: 2rem;
+    font-weight: bold;
+    pointer-events: none;
+    z-index: 10;
+}
+
+#score-left {
+    color: #00FFFF;
+    text-shadow: 0 0 10px currentColor, 0 0 20px currentColor;
+}
+
+#score-center {
+    font-size: 1.2rem;
+    color: #888;
+}
+
+#score-right {
+    color: #FF1493;
+    text-shadow: 0 0 10px currentColor, 0 0 20px currentColor;
+}
+
+/* Game Over Screen */
+#gameover-screen {
+    z-index: 20;
+    background: rgba(10, 10, 15, 0.7);
+    pointer-events: none;
+}
+
+#gameover-screen.active {
+    pointer-events: auto;
+}
+
+#gameover-screen h1 {
+    margin-bottom: 3rem;
+    pointer-events: none;
+}
+
+#gameover-screen .gameover-buttons {
+    pointer-events: auto;
+}
+
+.gameover-buttons {
+    display: flex;
+    gap: 2rem;
+}
+
+.gameover-buttons .primary-button {
+    border-color: inherit;
+    color: inherit;
+}
+
+.gameover-buttons .primary-button:hover {
+    background: rgba(255, 255, 255, 0.1);
+}
