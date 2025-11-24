@@ -10,9 +10,11 @@ Add online multiplayer to Neon Dogfight using a unified architecture where local
 
 - Prioritize low latency and smooth gameplay
 - Accept minor position deviations (±30 pixels)
-- Trust clients for their own hit detection
+- Trust clients for their own hit detection (friends-only game)
 - Server acts as relay + spawning authority
 - Works great for fast-paced arcade combat
+- **Fixed map size:** All players use same canvas dimensions (laptop-friendly)
+- **Win condition:** First to 5 kills (of any player) wins the match
 
 ## Game Modes
 
@@ -30,6 +32,28 @@ Add online multiplayer to Neon Dogfight using a unified architecture where local
 - 6-character battle code (e.g., `K3X9A2`)
 - Share code to invite players
 - 2-10 players per battle
+
+## Multiplayer Game Rules
+
+**Scoring & Victory:**
+- First to 5 kills (of any player) wins the match
+- In free-for-all, killing anyone counts toward your score
+
+**Respawn Mechanics:**
+- Spawn at random location (no safe-spawn validation)
+- 3 seconds of invulnerability (blinking effect)
+- While invulnerable: cannot shoot or interact with objects
+- Prevents spawn camping and immediate re-death
+
+**Reverse Power-Up (Multiplayer):**
+- Affects all opponents (not just one target)
+- All opponent homing missiles retarget to chase themselves
+- 8-second duration
+
+**Disconnect Handling:**
+- Player projectiles/effects removed on disconnect
+- Active effects on/by disconnected player are cancelled
+- Simple cleanup, no persistence
 
 ## Technical Architecture
 
@@ -210,8 +234,9 @@ Receiving client compensates for latency:
 - Results stay in sync
 
 **Pickup handling:**
-- First client to touch emits pickup event
-- Server validates (still exists?) and broadcasts removal
+- Power-ups have sequence numbers to prevent race conditions
+- First client to touch emits pickup event with sequence number
+- Server validates (sequence matches?) and broadcasts removal
 - All clients remove entity
 
 ## Code Structure
@@ -242,18 +267,23 @@ Receiving client compensates for latency:
 - Use NetworkManager for all actions
 - Remove PowerUpManager (replaced by spawner + network events)
 - Add mode parameter to constructor
+- Fixed canvas size (all players use same dimensions)
 
 **ui.js** (~100 lines changes)
 - Add mode selection UI
 - Battle code input/display
 - Player name always visible (not just in config)
-- Connection status display
+- Connection status & ping indicator display
 
 **index.html** (~50 lines changes)
 - Add Socket.io client script tag
 - Add mode selection radio buttons
 - Battle code input field
 - Simplified player config
+
+**settings.js** (minor changes)
+- Define fixed CANVAS_WIDTH and CANVAS_HEIGHT constants
+- Shared between client and server
 
 ### Unchanged Files
 - player.js, weapons.js, asteroid.js, particles.js, audio.js, utils.js
@@ -290,6 +320,18 @@ Receiving client compensates for latency:
 
 **Success criteria:** Can connect two clients through local server.
 
+### Phase 2.5: Edge Case Handling - 1-2 hours
+
+**Goal:** Handle disconnect and synchronization edge cases.
+
+**Tasks:**
+1. Disconnect cleanup (remove projectiles/effects owned by disconnected player)
+2. Sequence numbers for power-up pickups (prevent race conditions)
+3. Respawn mechanics (anywhere on map, invulnerable + can't shoot/interact while blinking)
+4. Relative timestamp synchronization (compensate for join time differences)
+
+**Success criteria:** Robust handling of disconnects and edge cases.
+
 ### Phase 3: Combat & Synchronization - 2-3 hours
 
 **Goal:** Full gameplay working online.
@@ -310,14 +352,13 @@ Receiving client compensates for latency:
 **Tasks:**
 1. Battle code generation/joining UI
 2. Player list display during game
-3. Connection status indicators
-4. Disconnect handling
-5. Deploy to EC2
-6. Test with real network latency
+3. Connection status indicators & ping display
+4. Deploy to EC2
+5. Test with real network latency
 
 **Success criteria:** Smooth gameplay from different locations.
 
-**Total estimated time:** 10-14 hours
+**Total estimated time:** 11-16 hours
 
 ## Server Implementation
 
@@ -337,7 +378,8 @@ Receiving client compensates for latency:
 4. Validate and relay deaths
 5. **Run spawn timers** (power-ups, asteroids)
 6. Broadcast spawns to room
-7. Clean up empty battles
+7. Handle disconnects (broadcast player-left, clean up projectiles)
+8. Clean up empty battles
 
 **Server does NOT:**
 - Run game physics
@@ -437,7 +479,7 @@ pm2 save
 ### Environment
 - No environment variables required
 - Configuration in settings.js (shared with client)
-- State is ephemeral (restart = clean slate)
+- State is ephemeral (restart = clean slate, acceptable for hobby project)
 
 ## Testing Strategy
 
@@ -455,16 +497,14 @@ pm2 save
 
 ## Performance Expectations
 
-### Server Load (per battle)
-- 10 players: ~20 KB/sec bandwidth, <1% CPU
-- 100 battles: ~2 MB/sec bandwidth, ~5% CPU
-- Memory: ~10 KB per battle
-
-**Conclusion:** Even t2.micro handles 50+ battles easily.
+### Server Load
+- 10 players per battle: ~20 KB/sec bandwidth, <1% CPU
+- Expected usage: 5-10 concurrent battles (hobby project scale)
+- t2.micro more than sufficient
 
 ### Network Requirements
-- Players: <50ms latency = excellent, <150ms = playable
-- Bandwidth: ~2 KB/sec per player (minimal)
+- <50ms latency = excellent, <150ms = playable
+- ~2 KB/sec per player (minimal bandwidth)
 
 ## Known Behaviors
 
@@ -478,6 +518,7 @@ pm2 save
 - Quick respawns minimize frustration
 - Visual effects (glow, particles) hide deviations
 - Arcade game feel embraces chaos
+- Trust-based system (friends-only, no anti-cheat needed)
 
 ## Key Decisions Summary
 
@@ -516,11 +557,16 @@ pm2 save
 - [ ] Add battle code UI
 - [ ] Test with localhost server
 
+### Phase 2.5: Edge Cases
+- [ ] Disconnect cleanup (remove player projectiles/effects)
+- [ ] Power-up sequence numbers (prevent pickup race conditions)
+- [ ] Respawn mechanics (invulnerability, no shoot/interact)
+- [ ] Relative timestamp synchronization
+
 ### Phase 3: Refinement
 - [ ] Add position interpolation
 - [ ] Add timestamp compensation for weapons
-- [ ] Handle disconnect/reconnect
-- [ ] Add connection status UI
+- [ ] Add connection status & ping indicator UI
 
 ### Phase 4: Deployment
 - [ ] Deploy server.js to EC2
@@ -537,15 +583,15 @@ pm2 save
 - `player-update` {x, y, angle, alive, shields, ...}
 - `fire-weapon` {type, x, y, angle, timestamp}
 - `i-died` {killerId}
-- `pickup-powerup` {powerupId}
+- `pickup-powerup` {powerupId, seq}
 
 **Server → Client:**
-- `game-state` {players, powerups, asteroid} (on join)
+- `game-state` {players, powerups, asteroid, serverTime} (on join)
 - `player-joined` {id, name, color}
 - `player-update` {id, x, y, angle, ...}
 - `weapon-fired` {ownerId, type, x, y, angle, timestamp}
 - `player-died` {victimId, killerId}
-- `powerup-spawned` {id, x, y, type}
+- `powerup-spawned` {id, x, y, type, seq}
 - `powerup-collected` {id, playerId}
 - `asteroid-spawned` {id, x, y, vx, vy, size, points}
 - `player-left` {id}
@@ -568,6 +614,7 @@ class PowerUpSpawner {
     if (shouldSpawn()) {
       onSpawn({
         id: generateId(),
+        seq: 0,  // Sequence number for pickup validation
         type: randomType(),
         x: randomX(),
         y: randomY()
@@ -594,11 +641,15 @@ spawner.update(dt, (powerup) => {
 **For accurate weapon placement despite lag:**
 
 ```javascript
-// Sender includes timestamp
-emit('fire-weapon', {x, y, angle, timestamp: gameTime});
+// Use relative timestamps (compensate for different join times)
+// Server provides joinTimestamp on connection
+// Client: serverGameTime = localGameTime + joinTimestamp
+
+// Sender includes relative timestamp
+emit('fire-weapon', {x, y, angle, timestamp: serverGameTime});
 
 // Receiver compensates
-latency = myGameTime - data.timestamp;
+latency = myServerGameTime - data.timestamp;
 adjustedX = data.x + cos(angle) * speed * latency;
 createBullet(adjustedX, adjustedY, angle);
 ```
@@ -641,20 +692,6 @@ Hides network jitter, creates smooth motion.
 - ⚠️ Rare "phantom hit" edge cases (<5%)
 - ⚠️ Brief desync on power-up pickup (resolves quickly)
 
-## Future Considerations
-
-### Easy Additions
-- Player list during game
-- Chat system
-- Spectator mode
-- Battle history
-
-### Later
-- Matchmaking system
-- Persistent leaderboards
-- Replays
-- Tournament mode
-
 ## Resources Required
 
 ### Development
@@ -668,9 +705,9 @@ Hides network jitter, creates smooth motion.
 - Node.js + PM2
 
 ### Maintenance
-- Server restart on updates (acceptable)
+- Server restart on updates (acceptable, no persistence)
 - No database to maintain
-- Monitor PM2 logs occasionally
+- Minimal monitoring needed
 
 ---
 
