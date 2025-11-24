@@ -18,9 +18,15 @@ class Game {
         this.ui = new UIManager();
         this.audio = new AudioManager();
         this.particles = new ParticleSystem();
-        this.powerUpManager = new PowerUpManager();
         
-        // Players
+        // Network manager (local mode for now)
+        this.network = null;
+        
+        // Players (now using arrays for future multiplayer support)
+        this.myPlayers = []; // Players controlled by this client
+        this.remotePlayers = new Map(); // id -> RemotePlayer (for online mode)
+        
+        // Legacy references for backward compatibility
         this.player1 = null;
         this.player2 = null;
         
@@ -31,6 +37,7 @@ class Game {
         this.bombs = [];
         this.asteroid = null;
         this.shrapnel = [];
+        this.powerUps = []; // Power-ups now managed by network spawning
         
         // Score
         this.p1Score = 0;
@@ -40,11 +47,6 @@ class Game {
         // Timing
         this.lastTime = 0;
         this.gameSpeed = 1;
-        this.asteroidSpawnTimer = 0;
-        this.nextAsteroidSpawnInterval = random(
-            GAME_SETTINGS.asteroid.spawnIntervalMin,
-            GAME_SETTINGS.asteroid.spawnIntervalMax
-        );
         
         // Input
         this.keys = {};
@@ -161,6 +163,10 @@ class Game {
         // Get player configuration
         const config = this.ui.getPlayerConfig();
         
+        // Initialize network manager (local mode)
+        this.network = new LocalNetworkManager(this.canvas.width, this.canvas.height);
+        this.setupNetworkCallbacks();
+        
         // Create players back-to-back at center, facing away from each other
         const centerX = this.canvas.width * 0.5;
         const centerY = this.canvas.height * 0.5;
@@ -171,8 +177,12 @@ class Game {
         const p2StartX = centerX + spacing;
         const p2StartY = centerY;
         
+        // Connect players through network (gets player IDs)
+        const p1Id = this.network.connect(config.player1.name, config.player1.color);
+        const p2Id = this.network.connect(config.player2.name, config.player2.color);
+        
         this.player1 = new Player(
-            1,
+            p1Id,
             p1StartX, p1StartY,
             Math.PI, // Facing left
             config.player1.color,
@@ -181,7 +191,7 @@ class Game {
         );
         
         this.player2 = new Player(
-            2,
+            p2Id,
             p2StartX, p2StartY,
             0, // Facing right
             config.player2.color,
@@ -192,6 +202,9 @@ class Game {
         // Set both players to starting speed
         this.player1.speedLevel = GAME_SETTINGS.player.defaultSpeedLevel;
         this.player2.speedLevel = GAME_SETTINGS.player.defaultSpeedLevel;
+        
+        // Add to myPlayers array
+        this.myPlayers = [this.player1, this.player2];
         
         // Reset score and match state
         this.p1Score = 0;
@@ -205,15 +218,8 @@ class Game {
         this.bombs = [];
         this.asteroid = null;
         this.shrapnel = [];
+        this.powerUps = [];
         this.particles.clear();
-        this.powerUpManager.clear();
-        
-        // Reset timers
-        this.asteroidSpawnTimer = 0;
-        this.nextAsteroidSpawnInterval = random(
-            GAME_SETTINGS.asteroid.spawnIntervalMin,
-            GAME_SETTINGS.asteroid.spawnIntervalMax
-        );
         
         // Update UI
         this.ui.updateScore(this.p1Score, this.p2Score, config.player1.color, config.player2.color);
@@ -222,9 +228,51 @@ class Game {
         this.state = 'PLAYING';
     }
     
+    setupNetworkCallbacks() {
+        // Power-up spawned by network
+        this.network.onPowerUpSpawned((data) => {
+            this.powerUps.push(new PowerUp(data.x, data.y, data.type));
+            this.powerUps[this.powerUps.length - 1].id = data.id;
+            this.powerUps[this.powerUps.length - 1].seq = data.seq;
+        });
+        
+        // Power-up collected
+        this.network.onPowerUpCollected((data) => {
+            this.powerUps = this.powerUps.filter(p => p.id !== data.id);
+        });
+        
+        // Asteroid spawned by network
+        this.network.onAsteroidSpawned((data) => {
+            this.asteroid = this.createAsteroidFromData(data);
+        });
+    }
+    
+    createAsteroidFromData(data) {
+        // Create asteroid with specific properties from network
+        const asteroid = new Asteroid(data.x, data.y, this.canvas.width, this.canvas.height);
+        asteroid.size = data.size;
+        asteroid.vx = data.vx;
+        asteroid.vy = data.vy;
+        asteroid.points = data.points;
+        return asteroid;
+    }
+    
     returnToMenu() {
         this.state = 'MENU';
         this.matchWon = false;
+        
+        // Disconnect from network
+        if (this.network) {
+            this.network.disconnect();
+            this.network = null;
+        }
+        
+        // Clear players
+        this.myPlayers = [];
+        this.remotePlayers.clear();
+        this.player1 = null;
+        this.player2 = null;
+        
         this.ui.showScreen('menu');
     }
     
@@ -271,6 +319,11 @@ class Game {
     update(dt) {
         if (!this.player1 || !this.player2) return;
         
+        // Update network (spawns power-ups and asteroids in local mode)
+        if (this.network) {
+            this.network.update(dt);
+        }
+        
         // Update players
         if (this.player1.alive) {
             this.player1.update(dt, this.canvas.width, this.canvas.height);
@@ -296,33 +349,84 @@ class Game {
         // Update asteroid
         if (this.asteroid) {
             if (!this.asteroid.update(dt)) {
+                // Notify network that asteroid was destroyed
+                if (this.network) {
+                    this.network.onAsteroidDestroyed();
+                }
                 this.asteroid = null;
-            }
-        } else {
-            // Spawn new asteroid
-            this.asteroidSpawnTimer += dt;
-            if (this.asteroidSpawnTimer > this.nextAsteroidSpawnInterval) {
-                this.spawnAsteroid();
-                this.asteroidSpawnTimer = 0;
-                // Set next random interval
-                this.nextAsteroidSpawnInterval = random(
-                    GAME_SETTINGS.asteroid.spawnIntervalMin,
-                    GAME_SETTINGS.asteroid.spawnIntervalMax
-                );
             }
         }
         
         // Update shrapnel
         this.shrapnel = this.shrapnel.filter(s => s.update(dt, this.canvas.width, this.canvas.height));
         
-        // Update power-ups
-        this.powerUpManager.update(dt, [this.player1, this.player2], this.canvas.width, this.canvas.height);
+        // Update power-ups and check for pickups
+        this.updatePowerUps(dt);
         
         // Update particles
         this.particles.update(dt, this.canvas.width, this.canvas.height);
         
         // Collision detection
         this.checkCollisions();
+    }
+    
+    updatePowerUps(dt) {
+        for (let powerUp of this.powerUps) {
+            powerUp.update(dt);
+            
+            // Check if any player picked it up
+            for (let player of [this.player1, this.player2]) {
+                if (player && player.alive) {
+                    const dist = getDistance(
+                        player.x, player.y,
+                        powerUp.x, powerUp.y,
+                        this.canvas.width, this.canvas.height
+                    );
+                    
+                    if (dist < player.radius + powerUp.radius) {
+                        this.applyPowerUp(player, powerUp.type);
+                        powerUp.pickup();
+                        
+                        // Notify network of pickup
+                        if (this.network) {
+                            this.network.sendPowerUpPickup(player.id, powerUp.id, powerUp.seq);
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Remove picked up power-ups
+        this.powerUps = this.powerUps.filter(p => p.alive);
+    }
+    
+    applyPowerUp(player, type) {
+        switch(type) {
+            case PowerUpType.SHIELD:
+                player.addShield();
+                break;
+            case PowerUpType.MULTISHOT:
+                player.activateMultiShot();
+                break;
+            case PowerUpType.HOMING:
+                player.loadHoming();
+                break;
+            case PowerUpType.INVISIBILITY:
+                player.activateInvisibility();
+                break;
+            case PowerUpType.LASER:
+                player.loadLaser();
+                break;
+            case PowerUpType.BOMB:
+                player.loadBomb();
+                break;
+            case PowerUpType.REVERSE:
+                player.loadReverse();
+                break;
+            case PowerUpType.ASTEROID_CHASE:
+                player.loadAsteroidChase();
+                break;
+        }
     }
     
     checkCollisions() {
@@ -732,15 +836,6 @@ class Game {
         }
     }
     
-    spawnAsteroid() {
-        const pos = getRandomSpawnPosition(
-            [this.player1, this.player2],
-            200,
-            this.canvas.width,
-            this.canvas.height
-        );
-        this.asteroid = new Asteroid(pos.x, pos.y, this.canvas.width, this.canvas.height);
-    }
     
     endGame(winner) {
         this.matchWon = true; // Mark that match is won but keep playing
@@ -761,7 +856,7 @@ class Game {
         this.shrapnel.forEach(s => s.draw(this.ctx));
         
         // Draw power-ups
-        this.powerUpManager.draw(this.ctx);
+        this.powerUps.forEach(p => p.draw(this.ctx));
         
         // Draw players
         if (this.player1) {
