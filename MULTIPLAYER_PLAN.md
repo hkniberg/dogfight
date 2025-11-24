@@ -1,905 +1,677 @@
 # Neon Dogfight - Multiplayer Implementation Plan
 
-## Executive Summary
+## Overview
 
-This document outlines the plan for adding online multiplayer to Neon Dogfight while maintaining the existing local multiplayer mode. The approach prioritizes low latency and smooth gameplay over perfect consistency, using a "believable sync" model suitable for fast-paced arcade combat.
+Add online multiplayer to Neon Dogfight using a unified architecture where local mode is simply "the server runs in the client." This approach maximizes code reuse and maintains clean separation between game logic and networking.
 
-## Design Goals
+## Design Philosophy
 
-### Priorities (in order)
-1. **Low latency** - Actions feel instant, no input lag
-2. **Smooth experience** - No stuttering or jittery movement
-3. **Simple to implement** - Minimal code changes, easy to maintain
-4. **Believable consistency** - Feels synchronized even if not perfect
+**Core Principle:** "Believable Sync over Perfect Sync"
 
-### Acceptable Trade-offs
-- Minor position deviations (±30 pixels) between clients
-- Occasional ambiguous hits (~5% edge cases)
-- Client trust model (anti-cheat not required)
+- Prioritize low latency and smooth gameplay
+- Accept minor position deviations (±30 pixels)
+- Trust clients for their own hit detection
+- Server acts as relay + spawning authority
+- Works great for fast-paced arcade combat
 
 ## Game Modes
 
-### Local Multiplayer (Current)
-- 2 players, 1 keyboard
-- Existing implementation unchanged
+### 1. Local Multiplayer
+- 2 players on one keyboard (current implementation)
+- NetworkManager runs in-process (no websockets)
+- Zero network overhead
 
-### Online Multiplayer - Free-For-All
-- Public battle arena
-- Auto-matchmaking (join "GLOBAL" battle)
-- Up to 10 players max per arena
+### 2. Online Free-For-All
+- Public battle arena (`GLOBAL` room)
+- Auto-join, up to 10 players per arena
 - Multiple arenas spawn if needed
 
-### Online Multiplayer - Private Battle
-- Enter or generate 6-character battle code
-- Only players with code can join
-- Support 2-10 players per battle
-- No password required (obscurity-based access)
+### 3. Online Private Battle
+- 6-character battle code (e.g., `K3X9A2`)
+- Share code to invite players
+- 2-10 players per battle
 
 ## Technical Architecture
 
-### Technology Stack
-- **Server:** Node.js + Express + Socket.io
-- **Hosting:** Existing EC2 instance
-- **Protocol:** WebSocket (Socket.io handles fallbacks)
-- **State Management:** In-memory (no database)
+### Unified Network Abstraction
 
-### Network Model: "Trust but Verify"
-
-**Core Principle:** Each client is authoritative for their own state. Server acts as relay with minimal validation.
+**Key Insight:** Game code always uses NetworkManager interface. Implementation differs by mode.
 
 ```
-┌─────────────┐
-│  Client A   │ ──┐
-└─────────────┘   │
-┌─────────────┐   │    ┌──────────────┐
-│  Client B   │ ──┼───→│ Socket.io    │
-└─────────────┘   │    │ Server       │
-┌─────────────┐   │    │ (EC2)        │
-│  Client C   │ ──┘    └──────┬───────┘
-└─────────────┘                │
-       ↑                       │
-       └───────────────────────┘
-         Broadcasts to room
+Game.js (mode-agnostic)
+    ↓
+NetworkManager (interface)
+    ↓
+    ├─→ LocalNetworkManager (direct calls, local spawning)
+    └─→ SocketNetworkManager (websockets to server)
 ```
 
-### Server Responsibilities
+**Benefits:**
+- Game.js has zero mode-specific branching
+- Test game logic in local mode (instant)
+- Add online later without changing game logic
+- Single codebase for all features
 
-**Simple relay + shared spawning:**
+### NetworkManager Interface
 
-1. **Connection Management**
-   - Player joins battle (create/join room)
-   - Track players in each battle
-   - Handle disconnects (broadcast player-left)
-
-2. **Message Relay**
-   - Player positions (throttled to ~20/sec per player)
-   - Weapon fire events
-   - Death notifications
-   - Score updates
-
-3. **Authoritative Spawning**
-   - Power-ups (server decides when/where/what)
-   - Asteroids (server decides when/where/size)
-   - Ensures all clients have same spawns
-
-4. **Basic Validation**
-   - Check player exists before relaying
-   - Prevent spam (rate limiting)
-   - Clean up empty battles
-
-**Server does NOT run game physics or collision detection!**
-
-### Client Responsibilities
-
-1. **Own Player Simulation**
-   - Run full game loop for own player
-   - Instant response to inputs (zero lag)
-   - Broadcast position updates
-
-2. **Remote Player Rendering**
-   - Receive position updates
-   - Interpolate between updates (smoothing)
-   - Extrapolate if updates delayed (dead reckoning)
-
-3. **Weapon Simulation**
-   - Create bullets/missiles from broadcast events
-   - Run identical physics locally
-   - Use timestamp compensation for accuracy
-
-4. **Hit Detection (Self-Authoritative)**
-   - Check if remote bullets hit ME
-   - Broadcast my death if hit
-   - Trust others' death broadcasts
-
-5. **Shared Entity Sync**
-   - Accept power-up spawns from server
-   - Accept asteroid spawns from server
-   - Remove when someone picks up (broadcast)
-
-## Implementation Details
-
-### Battle Code System
-
-**Generation:**
-```
-6 uppercase alphanumeric characters
-Example: "K3X9A2", "PLAYER", "BOOM42"
-Format: [A-Z0-9]{6}
-```
-
-**Special codes:**
-- `GLOBAL` - Free-for-all public arena
-- Custom codes - Private battles
-
-### Message Protocol
-
-**Key Socket.io Events:**
-
+**Core methods:**
 ```javascript
-// === Connection ===
-emit('join-battle', { battleCode, playerName, playerColor })
-on('game-state', { players, powerups, asteroids })
-on('player-joined', { id, name, color })
-on('player-left', { id })
+// Connection
+connect(battleCode, playerName, playerColor) → playerId
+disconnect()
 
-// === Player State ===
-emit('player-update', { x, y, angle, speedLevel, turnState, alive, shields, ... })
-on('player-update', { id, x, y, angle, ... })
+// Send events
+sendPlayerUpdate(playerId, {x, y, angle, ...})
+sendWeaponFire(playerId, {type, x, y, angle})
+sendDeath(playerId, killerId)
+sendPowerUpPickup(playerId, powerupId)
 
-// === Combat ===
-emit('fire-weapon', { type, x, y, angle, timestamp })
-on('weapon-fired', { ownerId, type, x, y, angle, timestamp })
+// Receive events (callbacks)
+onPlayerJoined(callback)
+onPlayerUpdate(callback)
+onWeaponFired(callback)
+onPlayerDied(callback)
+onPowerUpSpawned(callback)  // Server authoritative
+onAsteroidSpawned(callback)  // Server authoritative
 
-emit('i-died', { killerId })
-on('player-died', { victimId, killerId })
-
-// === Shared Spawns (Server → Clients) ===
-on('powerup-spawned', { x, y, type, id })
-on('powerup-collected', { id, playerId })
-on('asteroid-spawned', { x, y, vx, vy, size, points, id })
-on('asteroid-destroyed', { id })
+// Update loop (spawning for local mode)
+update(dt)
 ```
 
-### Synchronization Strategy
+### Local Mode: "In-Process Server"
 
-**Player Positions:**
-```
-Update Rate: 20 per second (every 50ms)
-Interpolation: Linear interpolation over 100ms
-Extrapolation: Continue last velocity if update delayed
-```
+**LocalNetworkManager:**
+- Implements NetworkManager interface
+- Direct function calls (no websockets)
+- Runs spawning logic locally
+- Broadcasts to local players via callbacks
+- Uses `setImmediate()` to maintain async patterns
 
-**Weapons:**
+**Example flow:**
 ```
-Fire Event: Immediate broadcast
-Spawn: All clients create identical object
-Physics: Each client simulates independently
-Collision: Self-authoritative (check hits on own player)
-```
-
-**Shared Spawns:**
-```
-Power-ups: Server decides spawn time/location/type
-Asteroids: Server decides spawn time/location/size/velocity
-Broadcast: All clients create identical objects
-Collection: First client to touch broadcasts pickup
+Player1.fire() → network.sendWeaponFire()
+                 ↓ (immediate callback)
+                 → network.onWeaponFired()
+                 ↓
+                 Player2 creates bullet
 ```
 
-### Hit Detection: "I Got Hit" Model
+### Online Mode: Real Server
 
-**Pseudocode:**
+**SocketNetworkManager:**
+- Implements NetworkManager interface
+- WebSocket communication via Socket.io
+- Server handles spawning
+- Broadcasts via server relay
 
-```javascript
-// On my client, each frame:
-for (remoteBullet of remoteBullets) {
-  if (checkCollision(myPlayer, remoteBullet)) {
-    myPlayer.die();
-    socket.emit('i-died', { 
-      killerId: remoteBullet.ownerId,
-      weaponType: 'bullet'
-    });
-    break;
-  }
-}
-
-// Server relays with validation:
-socket.on('i-died', (data) => {
-  const battle = battles[socket.battleCode];
-  
-  // Basic validation
-  if (!battle.players[data.killerId]) return; // Killer must exist
-  if (!battle.players[socket.id].alive) return; // Can't die twice
-  
-  // Update state
-  battle.players[socket.id].alive = false;
-  battle.players[data.killerId].score++;
-  
-  // Broadcast to all
-  io.to(socket.battleCode).emit('player-died', {
-    victimId: socket.id,
-    killerId: data.killerId
-  });
-});
-
-// All clients apply:
-socket.on('player-died', ({ victimId, killerId }) => {
-  players[victimId].die();
-  players[killerId].score++;
-  updateScoreboard();
-});
+**Example flow:**
 ```
+Player1.fire() → socket.emit('fire-weapon')
+                 ↓ (network delay)
+                 Server → socket.broadcast()
+                 ↓
+                 All clients receive → create bullet
+```
+
+## Network Model: "Self-Authoritative Hit Detection"
+
+### Core Mechanism
+
+**Each player is authoritative for hits on themselves:**
+
+1. Remote player fires bullet → broadcasts event
+2. All clients create bullet and simulate locally
+3. Each client checks: "Did this bullet hit ME?"
+4. If hit, victim broadcasts: "I died by Player X"
+5. Server validates and relays death
+6. All clients update scores and respawn
 
 **Why this works:**
-- You detect hits on your own screen (fair - you hit me where I actually was)
-- Server validates (killer exists, victim was alive)
-- Everyone applies the result (consistency)
+- Fair: You hit me on my screen (where I actually was)
+- Responsive: No waiting for server validation
+- Simple: No complex lag compensation needed
+- Believable: Deaths feel right to both players
 
-### Timestamp Compensation
+### Message Flow
 
-To handle latency for bullets:
-
-```javascript
-// When firing:
-socket.emit('fire-bullet', {
-  x, y, angle,
-  timestamp: myGameTime, // Local simulation time
-  bulletSpeed: 400
-});
-
-// When receiving:
-socket.on('fire-bullet', (data) => {
-  const latency = (myGameTime - data.timestamp);
-  const travelDistance = data.bulletSpeed * latency;
-  
-  // Spawn bullet slightly ahead to compensate
-  const adjustedX = data.x + Math.cos(data.angle) * travelDistance;
-  const adjustedY = data.y + Math.sin(data.angle) * travelDistance;
-  
-  createBullet(adjustedX, adjustedY, data.angle);
-});
+```
+Client A                    Server                  Client B
+  │                           │                        │
+  ├─ Fire bullet ────────────→│                        │
+  │  {x,y,angle,ts}            ├─ Relay ──────────────→│
+  │                            │                        ├─ Create bullet
+  │                            │                        ├─ Simulate
+  │                            │                        ├─ Check collision
+  │                            │                        ├─ Hit detected!
+  │                            │←─ I died (A killed) ──┤
+  ├←─────────────── Relay ────┤                        │
+  ├─ Update score              ├─ Broadcast ──────────→│
+  ├─ Respawn B                 │                        ├─ Die & respawn
 ```
 
-This makes bullets appear in the "right" place despite network delay!
+## Synchronization Details
 
-### Power-Up Spawning
+### What is Synchronized
 
-**Server-authoritative:**
+**Perfectly consistent (critical):**
+- Player scores (server validated)
+- Who is alive/dead (broadcast events)
+- Power-up spawns (server/local authoritative)
+- Asteroid spawns (server/local authoritative)
+- Match outcome
 
-```javascript
-// Server decides spawning
-function spawnPowerUp(battleCode) {
-  const battle = battles[battleCode];
-  const type = randomPowerUpType();
-  const pos = randomPosition();
-  
-  const powerup = {
-    id: generateId(),
-    type: type,
-    x: pos.x,
-    y: pos.y
-  };
-  
-  battle.powerups.push(powerup);
-  io.to(battleCode).emit('powerup-spawned', powerup);
-}
+**Eventually consistent (~50-100ms):**
+- Player positions (interpolated)
+- Active projectiles (simulated)
 
-// All clients create identical power-up
-socket.on('powerup-spawned', (data) => {
-  const powerup = new PowerUp(data.x, data.y, data.type);
-  powerup.networkId = data.id;
-  powerups.push(powerup);
-});
+**Local only (may vary):**
+- Particle effects
+- Visual feedback
+- Animation timing
 
-// First to touch picks it up
-if (myPlayer.collidesWith(powerup)) {
-  socket.emit('pickup-powerup', { id: powerup.networkId });
-}
+### Position Updates
 
-// Server validates and broadcasts
-socket.on('pickup-powerup', ({ id }) => {
-  const idx = battle.powerups.findIndex(p => p.id === id);
-  if (idx !== -1) {
-    battle.powerups.splice(idx, 1);
-    io.to(battleCode).emit('powerup-collected', { 
-      id, 
-      playerId: socket.id 
-    });
-  }
-});
+**Send rate:** 20 per second (every 50ms)
 
-// All clients remove
-socket.on('powerup-collected', ({ id, playerId }) => {
-  removePowerUp(id);
-  applyPowerUp(playerId);
-});
+**Client-side smoothing:**
+```
+Receive position update → set as target
+Each frame: interpolate current toward target
+Result: Smooth movement despite discrete updates
 ```
 
-## Code Changes Required
+**Interpolation prevents jitter, extrapolation handles packet loss.**
+
+### Weapon Synchronization
+
+**Timestamp compensation:**
+```
+Fire event includes game timestamp
+Receiving client compensates for latency:
+  - Calculate time since fire event
+  - Spawn bullet ahead by (speed × time)
+  - Appears in "correct" position despite delay
+```
+
+**Result:** Bullets feel accurate even with 100ms network delay.
+
+### Shared Entity Spawning
+
+**Power-ups and asteroids MUST be identical across clients:**
+
+**Server/LocalNetworkManager decides:**
+- When to spawn (random timer)
+- Where to spawn (random position)
+- What to spawn (random type/size)
+
+**All clients obey:**
+- Create identical entity at broadcast position
+- Run identical physics simulation
+- Results stay in sync
+
+**Pickup handling:**
+- First client to touch emits pickup event
+- Server validates (still exists?) and broadcasts removal
+- All clients remove entity
+
+## Code Structure
 
 ### New Files
 
-**1. server.js** (~200 lines)
-- Express server setup
-- Socket.io configuration
-- Battle room management
-- Event handlers for all game actions
-- Spawn timers for power-ups/asteroids
+**spawner.js** (~100 lines)
+- PowerUpSpawner class (shared between client and server)
+- AsteroidSpawner class
+- Used by LocalNetworkManager AND server.js
 
-**2. network.js** (~250 lines)
-- NetworkManager class
-- Socket.io client integration
-- Event emission helpers
-- Remote player interpolation
-- Message throttling
+**network.js** (~300 lines)
+- NetworkManager base class (interface)
+- LocalNetworkManager (in-process, no websockets)
+- SocketNetworkManager (real networking)
+- RemotePlayer class (interpolation logic)
+
+**server.js** (~200 lines)
+- Express + Socket.io setup
+- Battle room management
+- Event relay
+- Uses spawner.js for authoritative spawning
 
 ### Modified Files
 
-**3. game.js** (~150 lines of changes)
-- Add network mode parameter
-- Integrate NetworkManager
-- Broadcast own player state
-- Render remote players
-- Handle network events
-- Conditional logic: if online mode vs local mode
+**game.js** (~150 lines changes)
+- Replace player1/player2 with myPlayers[] and remotePlayers{}
+- Use NetworkManager for all actions
+- Remove PowerUpManager (replaced by spawner + network events)
+- Add mode parameter to constructor
 
-**4. ui.js** (~100 lines of changes)
-- Add mode selection UI (radio buttons)
-- Battle code input/generation
-- Player name input (always visible)
-- Loading/connecting states
-
-**5. index.html** (~50 lines of changes)
-- Add Socket.io client library (`<script src="/socket.io/socket.io.js">`)
+**ui.js** (~100 lines changes)
 - Add mode selection UI
-- Add battle code input field
-- Update player config section
+- Battle code input/display
+- Player name always visible (not just in config)
+- Connection status display
 
-**Total new code:** ~600 lines (manageable for a weekend project)
+**index.html** (~50 lines changes)
+- Add Socket.io client script tag
+- Add mode selection radio buttons
+- Battle code input field
+- Simplified player config
 
-## Lobby UI Design
+### Unchanged Files
+- player.js, weapons.js, asteroid.js, particles.js, audio.js, utils.js
+- All game logic stays the same!
 
-### Main Menu Structure
+**Total new code:** ~650 lines
 
+## Implementation Migration Plan
+
+### Phase 1: Create Abstraction (Local Only) - 3-4 hours
+
+**Goal:** Refactor to use NetworkManager while maintaining exact current functionality.
+
+**Tasks:**
+1. Create NetworkManager interface
+2. Implement LocalNetworkManager
+3. Extract spawning to spawner.js
+4. Modify game.js to use network.sendPlayerUpdate() etc.
+5. Replace direct player2 references with remote player concept
+6. Test thoroughly - must work identically to current version
+
+**Success criteria:** Local 2-player game works exactly as before.
+
+### Phase 2: Add Online Infrastructure - 3-4 hours
+
+**Goal:** Create server and online network manager.
+
+**Tasks:**
+1. Implement SocketNetworkManager
+2. Create server.js with basic relay
+3. Server uses spawner.js for authoritative spawning
+4. Add mode selector UI
+5. Test with localhost server + 2 browser tabs
+
+**Success criteria:** Can connect two clients through local server.
+
+### Phase 3: Combat & Synchronization - 2-3 hours
+
+**Goal:** Full gameplay working online.
+
+**Tasks:**
+1. Implement weapon fire events
+2. Add death detection and broadcasting
+3. Implement score synchronization
+4. Add position interpolation
+5. Add timestamp compensation
+
+**Success criteria:** Can play full match online with hits/deaths working.
+
+### Phase 4: Polish & Deploy - 2-3 hours
+
+**Goal:** Production-ready deployment.
+
+**Tasks:**
+1. Battle code generation/joining UI
+2. Player list display during game
+3. Connection status indicators
+4. Disconnect handling
+5. Deploy to EC2
+6. Test with real network latency
+
+**Success criteria:** Smooth gameplay from different locations.
+
+**Total estimated time:** 10-14 hours
+
+## Server Implementation
+
+### Technology
+- Node.js + Express (serve static files)
+- Socket.io (WebSocket library)
+- In-memory state (no database)
+- PM2 for process management
+
+### Server Responsibilities
+
+**Minimal relay + authoritative spawning:**
+
+1. Room management (join/leave battles)
+2. Relay player positions
+3. Relay weapon fire events
+4. Validate and relay deaths
+5. **Run spawn timers** (power-ups, asteroids)
+6. Broadcast spawns to room
+7. Clean up empty battles
+
+**Server does NOT:**
+- Run game physics
+- Detect collisions
+- Update bullet positions
+- Calculate scores (clients maintain, server relays)
+
+### Server State
+
+```javascript
+battles = {
+  'GLOBAL': {
+    players: { socketId: {name, color, score, alive} },
+    spawner: PowerUpSpawner,
+    asteroidSpawner: AsteroidSpawner
+  },
+  'K3X9A2': { ... }
+}
 ```
-┌────────────────────────────────────┐
-│       NEON DOGFIGHT                │
-├────────────────────────────────────┤
-│  Your Name: [_________]            │
-│  Your Color: [🎨]                  │
-├────────────────────────────────────┤
-│  Game Mode:                        │
-│  ○ Local Multiplayer (2 players)  │
-│  ○ Online Free-For-All             │
-│  ○ Online Private Battle           │
-│                                    │
-│  [if private selected:]            │
-│  Battle Code: [______]             │
-│  [Generate Code] [Join Battle]    │
-├────────────────────────────────────┤
-│  Statistics: ...                   │
-│  [START GAME]                      │
-└────────────────────────────────────┘
+
+**Per-battle spawn loops run at 20 FPS.**
+
+## Client Implementation
+
+### Game Loop Changes
+
+**Before (local only):**
+```javascript
+update(dt) {
+  player1.update(dt);
+  player2.update(dt);
+  powerUpManager.update(dt);  // Spawns locally
+  checkCollisions();
+}
 ```
 
-### Battle Code UI
-- Generate random 6-char code
-- Display prominently during game
-- Copy-to-clipboard button
-- Share link: `https://yourdomain.com/?battle=K3X9A2`
+**After (unified):**
+```javascript
+update(dt) {
+  // Update my controlled players
+  myPlayers.forEach(p => {
+    p.update(dt);
+    network.sendPlayerUpdate(p.id, p.serialize());
+  });
+  
+  // Update network (spawns in local mode, no-op in online mode)
+  network.update(dt);
+  
+  // Update remote players (interpolation)
+  remotePlayers.forEach(p => p.updateInterpolated(dt));
+  
+  // Check collisions (same for all)
+  checkCollisions();
+}
+```
 
-## Server Deployment
+**In local mode:** myPlayers = [P1, P2], remotePlayers = []
+**In online mode:** myPlayers = [P1], remotePlayers = [P2, P3, ...]
+
+### Remote Player Interpolation
+
+```javascript
+class RemotePlayer {
+  onNetworkUpdate(data) {
+    this.targetPos = {x: data.x, y: data.y, angle: data.angle};
+  }
+  
+  update(dt) {
+    // Smooth interpolation toward target
+    this.displayPos.x += (this.targetPos.x - this.displayPos.x) * 0.3;
+    this.displayPos.y += (this.targetPos.y - this.displayPos.y) * 0.3;
+    // Smooth angle interpolation (handle wrapping)
+  }
+  
+  draw(ctx) {
+    // Draw at smoothed position
+  }
+}
+```
+
+## Deployment
 
 ### EC2 Setup
 
 ```bash
-# Install Node.js (if not already)
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt-get install -y nodejs
-
-# Clone repository
-cd /var/www
-git clone https://github.com/hkniberg/dogfight.git
-cd dogfight
-
-# Install dependencies
+# Install Node.js & dependencies
 npm install express socket.io
 
-# Run with PM2 (auto-restart)
-sudo npm install -g pm2
+# Run with PM2
 pm2 start server.js --name neon-dogfight
 pm2 save
-pm2 startup
 
+# Open firewall for port 3000
 # Configure nginx reverse proxy (optional)
-# Point domain to :3000
 ```
 
-### Environment Configuration
-
-```javascript
-// server.js
-const PORT = process.env.PORT || 3000;
-const MAX_PLAYERS_PER_BATTLE = process.env.MAX_PLAYERS || 10;
-const CLEANUP_INTERVAL = 5 * 60 * 1000; // 5 minutes
-```
-
-## Performance Considerations
-
-### Server Load Estimates
-
-**Per battle (10 players):**
-- Bandwidth: ~20 KB/sec (incoming + outgoing)
-- CPU: Negligible (JSON relay only)
-- Memory: ~10 KB (player data)
-
-**100 concurrent battles:**
-- Bandwidth: 2 MB/sec
-- CPU: ~5% single core
-- Memory: 1 MB
-
-**Verdict:** t2.small easily handles 100+ battles
-
-### Optimization Strategies
-
-**1. Message Throttling:**
-```javascript
-// Don't send position every frame
-const UPDATE_RATE = 20; // per second
-let lastUpdate = 0;
-
-if (now - lastUpdate > 1000 / UPDATE_RATE) {
-  socket.emit('player-update', ...);
-  lastUpdate = now;
-}
-```
-
-**2. Battle Cleanup:**
-```javascript
-// Remove empty battles after 5 minutes
-setInterval(() => {
-  for (let code in battles) {
-    if (Object.keys(battles[code].players).length === 0) {
-      delete battles[code];
-    }
-  }
-}, 5 * 60 * 1000);
-```
-
-**3. Dead Player Optimization:**
-```javascript
-// Don't send updates for dead players
-if (!myPlayer.alive) return; // Skip position broadcast
-```
-
-## Consistency Mechanisms
-
-### What is Synchronized
-
-**Perfectly consistent:**
-- Player scores (server validated)
-- Who is alive/dead (broadcast on death)
-- Power-up locations (server spawns)
-- Asteroid locations (server spawns)
-- Match winner (derived from scores)
-
-**Eventually consistent (~50-100ms):**
-- Player positions (interpolated)
-- Active weapons (simulated)
-
-**Locally computed (may vary):**
-- Particle effects
-- Visual indicators
-- Animation timing
-
-### Handling Edge Cases
-
-**1. Race Conditions (two players grab same power-up):**
-```
-Client A: Grabs power-up → emits 'pickup'
-Client B: Grabs power-up → emits 'pickup'
-Server: First message wins, second is ignored (powerup gone)
-Client B: Receives 'pickup' from A, removes local powerup
-Result: Slight visual pop, but resolved quickly
-```
-
-**2. Simultaneous Deaths:**
-```
-Both clients emit 'i-died' at same time
-Server receives both, validates both were alive
-Server broadcasts both deaths
-Result: Draw (both die, no score change)
-```
-
-**3. Late-Joining Players:**
-```
-New player joins mid-game
-Server sends complete game state (all players, active entities)
-Client spawns everything to catch up
-Player joins at respawn, slight delay before entering
-```
-
-## Client-Side Smoothing
-
-### Position Interpolation
-
-**For remote players:**
-
-```javascript
-class RemotePlayer {
-  update(dt, receivedUpdate) {
-    if (receivedUpdate) {
-      this.targetX = receivedUpdate.x;
-      this.targetY = receivedUpdate.y;
-      this.targetAngle = receivedUpdate.angle;
-    }
-    
-    // Smooth interpolation
-    const LERP_SPEED = 0.3;
-    this.displayX += (this.targetX - this.displayX) * LERP_SPEED;
-    this.displayY += (this.targetY - this.displayY) * LERP_SPEED;
-    
-    // Smooth angle
-    let angleDiff = this.targetAngle - this.displayAngle;
-    if (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
-    if (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
-    this.displayAngle += angleDiff * LERP_SPEED;
-  }
-  
-  draw(ctx) {
-    // Draw at smoothed display position, not target
-    drawPlane(this.displayX, this.displayY, this.displayAngle);
-  }
-}
-```
-
-### Timestamp Compensation for Weapons
-
-```javascript
-// When receiving remote weapon fire:
-const latency = myGameTime - data.timestamp;
-const compensation = weaponSpeed * latency;
-
-// Spawn weapon ahead of reported position
-const adjustedX = data.x + Math.cos(data.angle) * compensation;
-const adjustedY = data.y + Math.sin(data.angle) * compensation;
-```
-
-This makes weapons appear where they "should" be despite network delay.
-
-## Game State Synchronization
-
-### What Client Tracks
-
-**For local player:**
-- Full Player object (existing code)
-- Own bullets (existing code)
-- All power-up state (existing code)
-
-**For remote players:**
-```javascript
-remotePlayers = {
-  'socket-id-123': {
-    id, name, color,
-    x, y, angle,
-    displayX, displayY, displayAngle, // Smoothed
-    speedLevel, turnState,
-    alive, shields,
-    invisible, reversed,
-    lastUpdate: timestamp
-  }
-}
-```
-
-**For shared entities:**
-```javascript
-networkPowerUps = [{ id, x, y, type }]
-networkAsteroid = { id, x, y, vx, vy, size, points, health }
-```
-
-### Update Frequencies
-
-| Data Type | Rate | Reason |
-|-----------|------|--------|
-| Player position | 20/sec | Smooth movement |
-| Weapon fire | On event | Instant |
-| Death | On event | Critical |
-| Power-up spawn | On event | Rare |
-| Asteroid state | 5/sec | Slow moving |
-
-## Local vs Online Mode
-
-### Conditional Execution Pattern
-
-```javascript
-class Game {
-  constructor(mode, battleCode) {
-    this.mode = mode; // 'local' or 'online'
-    
-    if (mode === 'online') {
-      this.network = new NetworkManager(battleCode);
-      this.setupNetworkHandlers();
-    }
-  }
-  
-  update(dt) {
-    // Always update own player
-    this.myPlayer.update(dt);
-    
-    if (this.mode === 'local') {
-      // Update other local player
-      this.player2.update(dt);
-      
-      // Check collisions between local players
-      this.checkCollisions();
-      
-      // Spawn power-ups/asteroids locally
-      this.spawnManager.update(dt);
-    } else {
-      // Send my position
-      this.network.sendPlayerUpdate(this.myPlayer);
-      
-      // Update remote players (interpolation)
-      this.network.updateRemotePlayers(dt);
-      
-      // Check collisions with remote entities
-      this.checkNetworkCollisions();
-      
-      // Power-ups/asteroids managed by server
-    }
-  }
-}
-```
-
-**Key insight:** Most code stays the same, just add conditional branching.
+### Environment
+- No environment variables required
+- Configuration in settings.js (shared with client)
+- State is ephemeral (restart = clean slate)
 
 ## Testing Strategy
 
-### Local Testing (Before EC2)
+### Local Testing
+1. Refactor to NetworkManager → test local mode works
+2. Run server.js on localhost → test with 2 browser tabs
+3. Add artificial lag → test interpolation
+4. Test all power-ups, weapons, edge cases
 
-```bash
-# Terminal 1: Run server
-node server.js
+### Remote Testing
+1. Deploy to EC2
+2. Test from multiple locations/networks
+3. Verify smooth gameplay at 50-100ms latency
+4. Tune interpolation parameters if needed
 
-# Browser 1: http://localhost:3000
-Enter name: "Player1"
-Mode: Online Private
-Code: "TEST01"
+## Performance Expectations
 
-# Browser 2: http://localhost:3000
-Enter name: "Player2"
-Mode: Online Private  
-Code: "TEST01"
+### Server Load (per battle)
+- 10 players: ~20 KB/sec bandwidth, <1% CPU
+- 100 battles: ~2 MB/sec bandwidth, ~5% CPU
+- Memory: ~10 KB per battle
 
-# Both should see each other!
-```
+**Conclusion:** Even t2.micro handles 50+ battles easily.
 
-### Test Scenarios
+### Network Requirements
+- Players: <50ms latency = excellent, <150ms = playable
+- Bandwidth: ~2 KB/sec per player (minimal)
 
-1. **Basic movement** - Do players see each other moving?
-2. **Shooting** - Do bullets appear on both screens?
-3. **Hits** - Do deaths register correctly?
-4. **Power-ups** - Do both see same power-ups?
-5. **Late join** - Can player 3 join mid-game?
-6. **Disconnect** - Does game continue if player leaves?
-7. **Lag simulation** - Add artificial delay to test smoothing
+## Known Behaviors
 
-### Network Simulation Tools
+### Expected "Quirks"
+- Remote players may be ±30 pixels off between screens (interpolation hides this)
+- Occasional controversial hit (~5% of cases) - victim's view is authoritative
+- Brief position snap on disconnect/reconnect
+
+### Why These Are Acceptable
+- Fast gameplay masks position uncertainty
+- Quick respawns minimize frustration
+- Visual effects (glow, particles) hide deviations
+- Arcade game feel embraces chaos
+
+## Key Decisions Summary
+
+### Architecture: Unified with Interface Abstraction
+- Single game logic, multiple network backends
+- Local mode = no websockets, direct calls
+- Online mode = Socket.io websockets
+- Spawning logic shared between client and server
+
+### Synchronization: Client-Side Simulation
+- Each client simulates all weapons
+- Self-authoritative hit detection
+- Server validates deaths (basic checks only)
+- Server spawns shared entities (power-ups, asteroids)
+
+### Not Chosen
+- ❌ Full server authority (too much lag)
+- ❌ Lockstep simulation (input delay)
+- ❌ Peer-to-peer WebRTC (complexity)
+- ❌ Mode-specific branching in game code
+
+## Migration Checklist
+
+### Phase 1: Abstraction Layer
+- [ ] Create NetworkManager interface
+- [ ] Extract spawning logic to spawner.js
+- [ ] Implement LocalNetworkManager
+- [ ] Refactor game.js to use NetworkManager
+- [ ] Replace player1/player2 with myPlayers[]/remotePlayers{}
+- [ ] Test local mode (must work identically)
+
+### Phase 2: Online Implementation
+- [ ] Implement SocketNetworkManager
+- [ ] Create server.js (relay + spawner integration)
+- [ ] Add mode selector to UI
+- [ ] Add battle code UI
+- [ ] Test with localhost server
+
+### Phase 3: Refinement
+- [ ] Add position interpolation
+- [ ] Add timestamp compensation for weapons
+- [ ] Handle disconnect/reconnect
+- [ ] Add connection status UI
+
+### Phase 4: Deployment
+- [ ] Deploy server.js to EC2
+- [ ] Test with real network latency
+- [ ] Tune interpolation parameters
+- [ ] Document server setup
+
+## Server Message Protocol
+
+### Socket.io Events
+
+**Client → Server:**
+- `join-battle` {battleCode, name, color}
+- `player-update` {x, y, angle, alive, shields, ...}
+- `fire-weapon` {type, x, y, angle, timestamp}
+- `i-died` {killerId}
+- `pickup-powerup` {powerupId}
+
+**Server → Client:**
+- `game-state` {players, powerups, asteroid} (on join)
+- `player-joined` {id, name, color}
+- `player-update` {id, x, y, angle, ...}
+- `weapon-fired` {ownerId, type, x, y, angle, timestamp}
+- `player-died` {victimId, killerId}
+- `powerup-spawned` {id, x, y, type}
+- `powerup-collected` {id, playerId}
+- `asteroid-spawned` {id, x, y, vx, vy, size, points}
+- `player-left` {id}
+
+### Update Rates
+- Player positions: 20/sec (50ms interval)
+- Weapons/deaths: immediate (event-based)
+- Server spawns: immediate broadcast
+
+## Implementation Notes
+
+### Shared Spawning Logic
+
+**Critical:** Server and LocalNetworkManager use identical spawning code.
 
 ```javascript
-// Add artificial lag for testing
-function simulateLag(socket, delayMs) {
-  const originalEmit = socket.emit;
-  socket.emit = function(...args) {
-    setTimeout(() => {
-      originalEmit.apply(socket, args);
-    }, delayMs);
-  };
+// spawner.js - used by both!
+class PowerUpSpawner {
+  update(dt, onSpawn) {
+    if (shouldSpawn()) {
+      onSpawn({
+        id: generateId(),
+        type: randomType(),
+        x: randomX(),
+        y: randomY()
+      });
+    }
+  }
 }
 
-// Test with 100ms, 200ms, 500ms lag
-```
+// LocalNetworkManager
+spawner.update(dt, (powerup) => {
+  this._onPowerUpSpawned(powerup);
+});
 
-## Deployment Workflow
-
-### Development Cycle
-
-```bash
-# 1. Develop locally
-node server.js
-
-# 2. Test with multiple browser tabs
-# 3. Commit changes
-git add .
-git commit -m "Add multiplayer support"
-git push origin main
-
-# 4. Deploy to EC2
-ssh ec2-user@your-server
-cd /var/www/dogfight
-git pull
-npm install
-pm2 restart neon-dogfight
-
-# 5. Test on EC2
-# Open from multiple devices/networks
-```
-
-### Zero-Downtime Updates
-
-```bash
-# On EC2, run two instances
-pm2 start server.js --name dogfight-blue -i 1 -- --port 3000
-pm2 start server.js --name dogfight-green -i 1 -- --port 3001
-
-# Nginx load balances
-# Update one at a time for zero downtime
-```
-
-## Known Limitations & Quirks
-
-### Expected Behaviors
-
-**Position Uncertainty:**
-- Remote players may appear ±30 pixels off on different screens
-- Masked by movement speed and visual effects
-- Not noticeable during fast gameplay
-
-**Occasional "Phantom Hits":**
-- Bullet misses on shooter's screen but hits on victim's screen (~5% of cases)
-- Acceptable for arcade game
-- Victim's view is authoritative (fair)
-
-**Network Hiccups:**
-- Players may "teleport" if connection drops briefly
-- Interpolation catches up within 200ms
-- Rare with stable connections
-
-### Handling Poor Connections
-
-**Disconnection detection:**
-```javascript
-// Ping timeout
-socket.on('disconnect', () => {
-  setTimeout(() => {
-    // If still disconnected after 5 seconds, remove from battle
-    removePlayer(socket.id);
-  }, 5000);
+// server.js
+spawner.update(dt, (powerup) => {
+  io.to(battleCode).emit('powerup-spawned', powerup);
 });
 ```
 
-**Degradation:**
-- >200ms lag: Position interpolation struggles
-- >500ms lag: Consider showing "connection poor" indicator
-- >1000ms lag: Essentially unplayable
+**Guarantees:** Same spawn behavior in local and online modes.
 
-**Recommendation:** Show latency indicator in online mode
+### Timestamp Compensation
 
-## Future Enhancements
+**For accurate weapon placement despite lag:**
+
+```javascript
+// Sender includes timestamp
+emit('fire-weapon', {x, y, angle, timestamp: gameTime});
+
+// Receiver compensates
+latency = myGameTime - data.timestamp;
+adjustedX = data.x + cos(angle) * speed * latency;
+createBullet(adjustedX, adjustedY, angle);
+```
+
+Makes bullets appear where they "should be" given the delay.
+
+### Position Interpolation
+
+**For smooth remote player movement:**
+
+```javascript
+onNetworkUpdate(data) {
+  remotePlayer.target = data; // Where they are
+}
+
+update(dt) {
+  // Smoothly move toward target
+  remotePlayer.display.x += (target.x - display.x) * 0.3;
+  remotePlayer.display.y += (target.y - display.y) * 0.3;
+}
+
+draw() {
+  drawAt(remotePlayer.display); // Use smoothed position
+}
+```
+
+Hides network jitter, creates smooth motion.
+
+## Success Criteria
+
+### Feels Good If:
+- ✅ Own ship responds instantly (zero perceived lag)
+- ✅ Remote players move smoothly (no teleporting)
+- ✅ Hits feel fair (>90% agreement between players)
+- ✅ Scores always match
+- ✅ Can play enjoyable 1v1 match
+
+### Acceptable Quirks:
+- ⚠️ Occasional position uncertainty (±30px)
+- ⚠️ Rare "phantom hit" edge cases (<5%)
+- ⚠️ Brief desync on power-up pickup (resolves quickly)
+
+## Future Considerations
 
 ### Easy Additions
+- Player list during game
+- Chat system
+- Spectator mode
+- Battle history
 
-- **Player list UI** - Show names/scores during game
-- **Chat messages** - Simple broadcast
-- **Spectator mode** - Join battle but don't spawn player
-- **Replay sharing** - Record and upload inputs
+### Later
+- Matchmaking system
+- Persistent leaderboards
+- Replays
+- Tournament mode
 
-### Medium Additions
+## Resources Required
 
-- **Matchmaking** - Auto-pair players in empty battles
-- **Leaderboards** - Persistent stats (add database)
-- **Custom game modes** - Server-side rule variations
-- **Battle history** - Save recent battles (add database)
+### Development
+- 10-14 hours implementation time
+- 2-3 hours testing and tuning
 
-### Complex Additions
+### Hosting
+- EC2 instance (existing)
+- ~2 MB/sec bandwidth per 100 battles
+- Minimal CPU/memory
+- Node.js + PM2
 
-- **Lag compensation** - Full rewind-and-replay
-- **Cheat detection** - Server validates all actions
-- **Voice chat** - WebRTC audio channels
-- **AI opponents** - Server-run bots
-
-## Decision Summary
-
-### Chosen Approach: Client-Side Simulation + Server Relay
-
-**Rationale:**
-1. Matches priorities (latency > perfect consistency)
-2. Simple implementation (~600 lines total)
-3. Reuses existing game logic
-4. Minimal server load (many battles on one EC2)
-5. Feels responsive and smooth
-6. "Believably consistent" for arcade gameplay
-
-**Not chosen:**
-- ❌ Full server authority (too much lag, too complex)
-- ❌ Lockstep (input delay hurts arcade feel)
-- ❌ Peer-to-peer (NAT issues, complexity)
-
-### Success Criteria
-
-**Game feels good if:**
-- ✅ Own actions have zero perceived lag
-- ✅ Remote players move smoothly (no jitter)
-- ✅ Hits feel fair (>90% agreement)
-- ✅ Scores always match across clients
-- ✅ Can play 1v1 with <100ms effective latency
-
-**Acceptable if occasionally:**
-- ⚠️ Remote player "teleports" slightly (rare)
-- ⚠️ Bullet appears to miss but registered hit (5% of cases)
-- ⚠️ Brief desync on power-up pickup (resolved within 100ms)
-
-## Implementation Timeline
-
-**Estimated effort:** 8-12 hours
-
-### Phase 1: Server Foundation (2-3 hours)
-- Set up Express + Socket.io server
-- Implement battle room management
-- Basic relay functionality
-- Test with simple position broadcasting
-
-### Phase 2: Client Integration (3-4 hours)
-- Create NetworkManager class
-- Add mode selection to UI
-- Integrate with existing game.js
-- Remote player rendering with interpolation
-
-### Phase 3: Combat & Weapons (2-3 hours)
-- Weapon fire event broadcasting
-- Timestamp compensation
-- Death detection and broadcasting
-- Score synchronization
-
-### Phase 4: Shared Spawning (1-2 hours)
-- Server-side power-up spawning
-- Server-side asteroid spawning
-- Client-side spawn handling
-- Pickup/collection events
-
-### Phase 5: Testing & Polish (2-3 hours)
-- Multi-tab local testing
-- EC2 deployment and testing
-- Latency testing with remote players
-- Bug fixes and smoothing adjustments
-
-## Risk Assessment
-
-### Low Risk
-- ✅ Basic connectivity (Socket.io is mature)
-- ✅ Message relay (straightforward)
-- ✅ Local testing (easy to verify)
-
-### Medium Risk
-- ⚠️ Interpolation tuning (requires playtesting)
-- ⚠️ Race conditions (power-up pickups, simultaneous deaths)
-- ⚠️ EC2 networking (firewall, websocket support)
-
-### Mitigation
-- Start with 2-player private battles (simplest)
-- Add free-for-all later (more complexity)
-- Extensive local testing before EC2 deployment
-- Gradual rollout (share with friends first)
-
-## Conclusion
-
-The proposed architecture strikes the right balance for Neon Dogfight's online multiplayer:
-
-- **Simple enough** to implement in a weekend
-- **Responsive enough** to feel like local play
-- **Consistent enough** for fair, fun gameplay
-- **Scalable enough** to support many concurrent battles on modest hardware
-
-The "believable sync" model with client-side simulation and server relay is well-suited for fast-paced arcade combat where perfect accuracy matters less than smooth, responsive gameplay.
-
-**Next steps when ready to implement:**
-1. Create server.js with basic relay
-2. Create network.js with Socket.io client wrapper
-3. Modify game.js to support online mode
-4. Test locally with multiple browser tabs
-5. Deploy to EC2 and test with real network latency
+### Maintenance
+- Server restart on updates (acceptable)
+- No database to maintain
+- Monitor PM2 logs occasionally
 
 ---
 
-*Document created: 2024*
-*Target implementation: TBD*
-
+**This architecture provides clean code separation, maximum reusability, and smooth gameplay across both local and online modes.**
