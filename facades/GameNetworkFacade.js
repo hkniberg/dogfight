@@ -237,7 +237,9 @@ class GameNetworkFacade {
     broadcastWeaponFire(playerCtrl, weaponData) {
         if (!this.isOnlineMode()) return;
         
-        this.network.sendWeaponFire(weaponData);
+        // Extract playerId from weaponData and pass remaining data as second param
+        const { playerId, ...data } = weaponData;
+        this.network.sendWeaponFire(playerId, data);
     }
     
     broadcastPowerUpPickup(playerCtrl, powerupId, powerupType) {
