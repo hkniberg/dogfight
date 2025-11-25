@@ -15,6 +15,8 @@ class NetworkManager {
         this._onAsteroidDamagedCallback = null;
         this._onAsteroidDestroyedCallback = null;
         this._onPlayerLeftCallback = null;
+        this._onReverseEffectCallback = null;
+        this._onAsteroidChaseCallback = null;
     }
     
     // Connection methods
@@ -53,6 +55,14 @@ class NetworkManager {
     
     sendAsteroidDestroyed() {
         throw new Error('sendAsteroidDestroyed() must be implemented');
+    }
+    
+    sendReverseEffect(playerId, affectedPlayerIds) {
+        throw new Error('sendReverseEffect() must be implemented');
+    }
+    
+    sendAsteroidChase(targetId) {
+        throw new Error('sendAsteroidChase() must be implemented');
     }
     
     // Receive event callbacks
@@ -98,6 +108,14 @@ class NetworkManager {
     
     onPlayerLeft(callback) {
         this._onPlayerLeftCallback = callback;
+    }
+    
+    onReverseEffect(callback) {
+        this._onReverseEffectCallback = callback;
+    }
+    
+    onAsteroidChase(callback) {
+        this._onAsteroidChaseCallback = callback;
     }
     
     // Update loop (for spawning in local mode)
@@ -201,6 +219,31 @@ class LocalNetworkManager extends NetworkManager {
     sendAsteroidDestroyed() {
         // In local mode, destruction is handled directly
         // No need to broadcast
+    }
+    
+    sendReverseEffect(playerId, affectedPlayerIds) {
+        // In local mode, reverse effect is applied directly
+        // Callback is called synchronously for local handling
+        if (this._onReverseEffectCallback) {
+            setTimeout(() => {
+                this._onReverseEffectCallback({
+                    playerId: playerId,
+                    affectedPlayerIds: affectedPlayerIds
+                });
+            }, 0);
+        }
+    }
+    
+    sendAsteroidChase(targetId) {
+        // In local mode, asteroid chase is applied directly
+        // Callback is called synchronously for local handling
+        if (this._onAsteroidChaseCallback) {
+            setTimeout(() => {
+                this._onAsteroidChaseCallback({
+                    targetId: targetId
+                });
+            }, 0);
+        }
     }
     
     update(dt) {
@@ -573,6 +616,33 @@ class PeerNetworkManager extends NetworkManager {
                     this._onAsteroidDestroyedCallback();
                 }
                 break;
+                
+            case 'reverse-effect':
+                // Relay if host
+                if (this.isHost && data.playerId !== this.myPlayerId) {
+                    this.broadcast(data, conn ? conn.peer : null);
+                }
+                // Handle locally
+                if (this._onReverseEffectCallback) {
+                    this._onReverseEffectCallback({
+                        playerId: data.playerId,
+                        affectedPlayerIds: data.affectedPlayerIds
+                    });
+                }
+                break;
+                
+            case 'asteroid-chase':
+                // Relay if host
+                if (this.isHost) {
+                    this.broadcast(data, conn ? conn.peer : null);
+                }
+                // Handle locally
+                if (this._onAsteroidChaseCallback) {
+                    this._onAsteroidChaseCallback({
+                        targetId: data.targetId
+                    });
+                }
+                break;
         }
     }
     
@@ -735,6 +805,45 @@ class PeerNetworkManager extends NetworkManager {
         });
     }
     
+    sendReverseEffect(playerId, affectedPlayerIds) {
+        if (!this.connected) return;
+        
+        const message = {
+            type: 'reverse-effect',
+            playerId: playerId,
+            affectedPlayerIds: affectedPlayerIds
+        };
+        
+        // Broadcast to all players (host or client)
+        if (this.isHost) {
+            this.broadcast(message);
+        } else {
+            const hostConn = this.connections.get(this.battleCode);
+            if (hostConn) {
+                hostConn.send(message);
+            }
+        }
+    }
+    
+    sendAsteroidChase(targetId) {
+        if (!this.connected) return;
+        
+        const message = {
+            type: 'asteroid-chase',
+            targetId: targetId
+        };
+        
+        // Broadcast to all players (host or client)
+        if (this.isHost) {
+            this.broadcast(message);
+        } else {
+            const hostConn = this.connections.get(this.battleCode);
+            if (hostConn) {
+                hostConn.send(message);
+            }
+        }
+    }
+    
     update(dt) {
         // Only host runs spawning logic
         if (!this.isHost) return;
@@ -816,9 +925,35 @@ class RemotePlayer {
         this.shields = 0;
         this.invulnerable = false;
         
+        // Power-up states for visual display
+        this.invisible = false;
+        this.invisibleTime = 0;
+        this.invisibleDuration = GAME_SETTINGS.powerups.invisibility.duration;
+        
+        this.multiShot = false;
+        this.multiShotTime = 0;
+        this.multiShotDuration = GAME_SETTINGS.powerups.multiShot.duration;
+        
+        this.reversed = false;
+        this.reversedTime = 0;
+        this.reversedDuration = GAME_SETTINGS.powerups.reverse.duration;
+        
         // Canvas dimensions for wrapping
         this.canvasWidth = 1600;
         this.canvasHeight = 900;
+    }
+    
+    // Getter properties for compatibility with Laser and other weapon classes
+    get x() {
+        return this.displayPos.x;
+    }
+    
+    get y() {
+        return this.displayPos.y;
+    }
+    
+    get angle() {
+        return this.displayPos.angle;
     }
     
     onStateChange(data) {
@@ -846,6 +981,31 @@ class RemotePlayer {
     }
     
     update(dt) {
+        // Update timed power-up effects
+        if (this.invisible) {
+            this.invisibleTime += dt;
+            if (this.invisibleTime > this.invisibleDuration) {
+                this.invisible = false;
+                this.invisibleTime = 0;
+            }
+        }
+        
+        if (this.multiShot) {
+            this.multiShotTime += dt;
+            if (this.multiShotTime > this.multiShotDuration) {
+                this.multiShot = false;
+                this.multiShotTime = 0;
+            }
+        }
+        
+        if (this.reversed) {
+            this.reversedTime += dt;
+            if (this.reversedTime > this.reversedDuration) {
+                this.reversed = false;
+                this.reversedTime = 0;
+            }
+        }
+        
         // Phase 2: Simple interpolation toward target
         // Phase 3: Will add extrapolation based on speedLevel/turnState
         const smoothing = 0.3;

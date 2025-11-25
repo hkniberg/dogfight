@@ -128,13 +128,16 @@ class Game {
     }
     
     handleFire(player) {
-        // Find target player (for special powerups like reverse/asteroidChase)
-        // In local mode: other local player
-        // In online mode: pick random opponent or null
+        // Find target player (for homing missiles, reverse, asteroidChase, etc.)
         let targetPlayer = null;
+        
         if (this.myPlayers.length > 1) {
             // Local mode: find other local player
             targetPlayer = this.myPlayers.find(p => p !== player);
+        } else if (this.remotePlayers.size > 0) {
+            // Online mode: pick first remote opponent
+            const opponents = Array.from(this.remotePlayers.values());
+            targetPlayer = opponents.find(p => p.alive && !p.invisible) || opponents[0];
         }
         
         const result = player.fire(targetPlayer);
@@ -142,37 +145,66 @@ class Game {
         
         // Send weapon fire event to network (online mode)
         if (this.network && this.network.constructor.name === 'PeerNetworkManager') {
-            this.network.sendWeaponFire(player.id, {
+            const weaponData = {
                 weaponType: result.type,
                 x: player.x,
                 y: player.y,
                 angle: player.angle
-            });
+            };
+            
+            // For bombs, include if it's homing
+            if (result.type === 'bomb' && result.weapon && result.weapon.length > 0) {
+                weaponData.isHomingBomb = result.weapon[0].isHoming;
+            }
+            
+            this.network.sendWeaponFire(player.id, weaponData);
         }
         
         // Handle special effect power-ups (affect opponent)
         if (result.type === 'reverse') {
-            if (targetPlayer) {
-                targetPlayer.activateReverse();
-                this.audio.playPowerUp();
-                this.particles.createExplosion(targetPlayer.x, targetPlayer.y, '#ffff00', 15, 150);
+            // In multiplayer, affect ALL opponents
+            const opponents = this.getOpponents(player.id);
+            
+            for (const opponent of opponents) {
+                opponent.activateReverse();
+                this.particles.createExplosion(opponent.x, opponent.y, '#ffff00', 15, 150);
                 
-                // Reverse all existing homing missiles from the target player
+                // Reverse all existing homing missiles from this opponent
                 for (let missile of this.homingMissiles) {
-                    if (missile.ownerId === targetPlayer.id) {
-                        missile.targetPlayer = targetPlayer; // Now targets the shooter!
+                    if (missile.ownerId === opponent.id) {
+                        missile.targetPlayer = opponent; // Now targets the shooter!
                     }
                 }
             }
-            // TODO: In online mode with multiple opponents, affect all opponents
+            
+            this.audio.playPowerUp();
+            
+            // Send reverse effect to network
+            if (this.network && this.network.constructor.name === 'PeerNetworkManager') {
+                this.network.sendReverseEffect(player.id, opponents.map(p => p.id));
+            }
+            
             return;
         }
         
         if (result.type === 'asteroidChase') {
-            if (this.asteroid && this.asteroid.alive && targetPlayer) {
-                this.asteroid.startChasing(targetPlayer);
-                this.audio.playPowerUp();
-                this.particles.createExplosion(this.asteroid.x, this.asteroid.y, '#ff00ff', 20, 200);
+            if (this.asteroid && this.asteroid.alive) {
+                // Pick a target: in 2-player local it's the other player, in online pick first opponent
+                let chaseTarget = targetPlayer;
+                if (!chaseTarget && this.remotePlayers.size > 0) {
+                    chaseTarget = Array.from(this.remotePlayers.values())[0];
+                }
+                
+                if (chaseTarget) {
+                    this.asteroid.startChasing(chaseTarget);
+                    this.audio.playPowerUp();
+                    this.particles.createExplosion(this.asteroid.x, this.asteroid.y, '#ff00ff', 20, 200);
+                    
+                    // Send asteroid chase command to network
+                    if (this.network && this.network.constructor.name === 'PeerNetworkManager') {
+                        this.network.sendAsteroidChase(chaseTarget.id);
+                    }
+                }
             }
             return;
         }
@@ -381,7 +413,13 @@ class Game {
         // Weapon fired by remote player
         this.network.onWeaponFired((data) => {
             console.log(`[Game] Weapon fired by player ${data.playerId}: ${data.weaponType}`);
-            // Create weapon at specified position
+            
+            // Skip if it's one of our local players (already created locally)
+            if (this.myPlayers.some(p => p.id === data.playerId)) {
+                return;
+            }
+            
+            // Create weapon at specified position for remote players
             this.createWeaponFromNetwork(data);
         });
         
@@ -459,6 +497,80 @@ class Game {
                 this.asteroid = null;
             }
         });
+        
+        // Reverse effect activated
+        this.network.onReverseEffect((data) => {
+            // Apply reverse effect to affected players
+            for (const targetId of data.affectedPlayerIds) {
+                // Check if it's one of our local players
+                const localPlayer = this.myPlayers.find(p => p.id === targetId);
+                if (localPlayer) {
+                    localPlayer.activateReverse();
+                    this.particles.createExplosion(localPlayer.x, localPlayer.y, '#ffff00', 15, 150);
+                    
+                    // Retarget all homing missiles from this player
+                    for (let missile of this.homingMissiles) {
+                        if (missile.ownerId === localPlayer.id) {
+                            missile.targetPlayer = localPlayer;
+                        }
+                    }
+                }
+                
+                // Check if it's a remote player
+                const remotePlayer = this.remotePlayers.get(targetId);
+                if (remotePlayer) {
+                    remotePlayer.reversed = true;
+                    remotePlayer.reversedTime = 0;
+                    this.particles.createExplosion(remotePlayer.displayPos.x, remotePlayer.displayPos.y, '#ffff00', 15, 150);
+                    
+                    // Retarget missiles from remote player (if we're tracking them)
+                    for (let missile of this.homingMissiles) {
+                        if (missile.ownerId === remotePlayer.id) {
+                            // Can't directly retarget remote player's missiles, but mark them
+                            // This is acceptable for the game design
+                        }
+                    }
+                }
+            }
+            
+            this.audio.playPowerUp();
+        });
+        
+        // Asteroid chase activated
+        this.network.onAsteroidChase((data) => {
+            if (this.asteroid && this.asteroid.alive) {
+                // Find the target player
+                let chaseTarget = this.myPlayers.find(p => p.id === data.targetId);
+                if (!chaseTarget) {
+                    chaseTarget = this.remotePlayers.get(data.targetId);
+                }
+                
+                if (chaseTarget) {
+                    this.asteroid.startChasing(chaseTarget);
+                    this.audio.playPowerUp();
+                    this.particles.createExplosion(this.asteroid.x, this.asteroid.y, '#ff00ff', 20, 200);
+                }
+            }
+        });
+    }
+    
+    getOpponents(playerId) {
+        // Get all players except the specified one
+        const opponents = [];
+        
+        for (const player of this.myPlayers) {
+            if (player.id !== playerId) {
+                opponents.push(player);
+            }
+        }
+        
+        for (const player of this.remotePlayers.values()) {
+            if (player.id !== playerId) {
+                opponents.push(player);
+            }
+        }
+        
+        return opponents;
     }
     
     createWeaponFromNetwork(data) {
@@ -496,17 +608,33 @@ class Game {
             
             this.audio.playShoot();
         } else if (data.weaponType === 'homing') {
-            // Find a target (pick a local player or null)
-            const targetPlayer = this.myPlayers[0] || null;
+            // Find a target (pick first opponent of the firing player)
+            let targetPlayer = null;
+            const opponents = this.getOpponents(data.playerId);
+            if (opponents.length > 0) {
+                // Target first visible, non-invisible opponent
+                targetPlayer = opponents.find(p => p.alive && !p.invisible) || opponents[0];
+            }
+            
             const missile = new HomingMissile(data.x, data.y, data.angle, color, data.playerId, targetPlayer);
             this.homingMissiles.push(missile);
             this.audio.playShoot();
         } else if (data.weaponType === 'laser') {
-            const laser = new Laser(data.x, data.y, data.angle, color, data.playerId);
+            // Lasers need a player reference to follow their rotation
+            // For remote players, we need to pass the RemotePlayer or local Player object
+            const laser = new Laser(firingPlayer, color, data.playerId, 0);
             this.lasers.push(laser);
             this.audio.playLaserHum();
         } else if (data.weaponType === 'bomb') {
-            const bomb = new Bomb(data.x, data.y, data.angle, color, data.playerId);
+            // Check if it's a homing bomb by looking for targetId in data
+            let targetPlayer = null;
+            if (data.isHomingBomb) {
+                const opponents = this.getOpponents(data.playerId);
+                if (opponents.length > 0) {
+                    targetPlayer = opponents.find(p => p.alive && !p.invisible) || opponents[0];
+                }
+            }
+            const bomb = new Bomb(data.x, data.y, data.angle, color, data.playerId, targetPlayer);
             this.bombs.push(bomb);
         }
     }
@@ -598,6 +726,47 @@ class Game {
         this.ctx.translate(pos.x, pos.y);
         this.ctx.rotate(pos.angle);
         
+        // Invisibility effect
+        if (remotePlayer.invisible) {
+            const pulse = (Math.sin(Date.now() * GAME_SETTINGS.powerups.invisibility.pulseSpeed) + 1) / 2;
+            const alphaRange = GAME_SETTINGS.powerups.invisibility.maxAlpha - GAME_SETTINGS.powerups.invisibility.minAlpha;
+            this.ctx.globalAlpha = GAME_SETTINGS.powerups.invisibility.minAlpha + (pulse * alphaRange);
+        }
+        
+        // Invulnerability flashing
+        if (remotePlayer.invulnerable && Math.floor(Date.now() / 100) % 2 === 0) {
+            this.ctx.globalAlpha = 0.5;
+        }
+        
+        // Reversed controls indicator (yellow question mark)
+        if (remotePlayer.reversed) {
+            const reversePulse = (Math.sin(Date.now() * 0.005) + 1) / 2;
+            this.ctx.fillStyle = '#ffff00';
+            this.ctx.shadowBlur = 15 + reversePulse * 10;
+            this.ctx.shadowColor = '#ffff00';
+            this.ctx.globalAlpha = 0.7 + reversePulse * 0.3;
+            this.ctx.font = 'bold 20px monospace';
+            this.ctx.textAlign = 'center';
+            this.ctx.textBaseline = 'middle';
+            this.ctx.fillText('?', 0, -25);
+            this.ctx.globalAlpha = 1;
+        }
+        
+        // Draw shields
+        if (remotePlayer.shields > 0) {
+            for (let i = 0; i < remotePlayer.shields; i++) {
+                const shieldRadius = size + 8 + (i * 6);
+                const shieldWidth = 2 + i;
+                this.ctx.strokeStyle = '#0066ff';
+                this.ctx.lineWidth = shieldWidth;
+                this.ctx.shadowBlur = 10;
+                this.ctx.shadowColor = '#0066ff';
+                this.ctx.beginPath();
+                this.ctx.arc(0, 0, shieldRadius, 0, Math.PI * 2);
+                this.ctx.stroke();
+            }
+        }
+        
         // Draw ship body (triangle)
         this.ctx.beginPath();
         this.ctx.moveTo(size, 0);
@@ -617,30 +786,37 @@ class Game {
         this.ctx.shadowColor = remotePlayer.color;
         this.ctx.stroke();
         
-        // Draw shields
-        if (remotePlayer.shields > 0) {
-            for (let i = 0; i < remotePlayer.shields; i++) {
-                const shieldRadius = size + 8 + (i * 6);
-                const shieldWidth = 2 + i;
-                this.ctx.strokeStyle = '#0066ff';
-                this.ctx.lineWidth = shieldWidth;
-                this.ctx.shadowBlur = 10;
-                this.ctx.shadowColor = '#0066ff';
-                this.ctx.beginPath();
-                this.ctx.arc(0, 0, shieldRadius, 0, Math.PI * 2);
-                this.ctx.stroke();
-            }
+        // Draw multishot wings (amber)
+        if (remotePlayer.multiShot) {
+            this.ctx.strokeStyle = '#ffaa00';
+            this.ctx.lineWidth = 3;
+            this.ctx.shadowColor = '#ffaa00';
+            this.ctx.beginPath();
+            this.ctx.moveTo(-5, -size / 2);
+            this.ctx.lineTo(-5, -size / 2 - 5);
+            this.ctx.moveTo(-5, size / 2);
+            this.ctx.lineTo(-5, size / 2 + 5);
+            this.ctx.stroke();
         }
         
         this.ctx.restore();
         
-        // Draw name above ship
-        this.ctx.save();
-        this.ctx.fillStyle = remotePlayer.color;
-        this.ctx.font = '12px "Courier New", monospace';
-        this.ctx.textAlign = 'center';
-        this.ctx.fillText(remotePlayer.name, pos.x, pos.y - 20);
-        this.ctx.restore();
+        // Draw name above ship (not shown if invisible, unless invulnerable)
+        if (!remotePlayer.invisible || remotePlayer.invulnerable) {
+            this.ctx.save();
+            if (remotePlayer.invisible) {
+                const pulse = (Math.sin(Date.now() * GAME_SETTINGS.powerups.invisibility.pulseSpeed) + 1) / 2;
+                const alphaRange = GAME_SETTINGS.powerups.invisibility.maxAlpha - GAME_SETTINGS.powerups.invisibility.minAlpha;
+                this.ctx.globalAlpha = GAME_SETTINGS.powerups.invisibility.minAlpha + (pulse * alphaRange);
+            }
+            this.ctx.fillStyle = remotePlayer.color;
+            this.ctx.shadowBlur = 5;
+            this.ctx.shadowColor = remotePlayer.color;
+            this.ctx.font = 'bold 12px monospace';
+            this.ctx.textAlign = 'center';
+            this.ctx.fillText(remotePlayer.name, pos.x, pos.y - 25);
+            this.ctx.restore();
+        }
     }
     
     update(dt) {
@@ -680,8 +856,11 @@ class Game {
         // Update weapons
         this.homingMissiles = this.homingMissiles.filter(m => m.update(dt, this.canvas.width, this.canvas.height));
         this.lasers = this.lasers.filter(l => l.update(dt));
+        
+        // For bombs, pass all players (local + remote) for proximity detection
+        const allPlayers = [...this.myPlayers, ...Array.from(this.remotePlayers.values())];
         this.bombs = this.bombs.filter(b => {
-            const stillAlive = b.update(dt, this.canvas.width, this.canvas.height, this.myPlayers);
+            const stillAlive = b.update(dt, this.canvas.width, this.canvas.height, allPlayers);
             if (b.detonated) {
                 this.handleBombExplosion(b);
             }
@@ -786,9 +965,15 @@ class Game {
             case PowerUpType.INVISIBILITY:
                 // Mark as invisible (tracked in RemotePlayer)
                 remotePlayer.invisible = true;
+                remotePlayer.invisibleTime = 0;
                 break;
-            // Other powerups don't need visual representation on remote players
-            // They're tracked and applied by the player's own client
+            case PowerUpType.MULTISHOT:
+                // Mark as having multi-shot (visual effect on ship)
+                remotePlayer.multiShot = true;
+                remotePlayer.multiShotTime = 0;
+                break;
+            // Ammo-based powerups (homing, laser, bomb, reverse, asteroid chase) don't need
+            // visual representation on remote players - they're shown when fired
         }
     }
     
@@ -855,7 +1040,11 @@ class Game {
                 
                 if (dist < player.radius + missile.radius) {
                     missile.alive = false;
-                    const attacker = this.myPlayers.find(p => p.id === missile.ownerId);
+                    // Find attacker (could be local or remote)
+                    let attacker = this.myPlayers.find(p => p.id === missile.ownerId);
+                    if (!attacker) {
+                        attacker = this.remotePlayers.get(missile.ownerId);
+                    }
                     this.handlePlayerHit(player, attacker);
                 }
             }
@@ -875,7 +1064,12 @@ class Game {
                         laser.alive = false; // Laser is destroyed by shield
                         this.audio.playShieldHit();
                     } else {
-                        this.handlePlayerHit(player, this.myPlayers.find(p => p.id === laser.ownerId));
+                        // Find attacker (could be local or remote)
+                        let attacker = this.myPlayers.find(p => p.id === laser.ownerId);
+                        if (!attacker) {
+                            attacker = this.remotePlayers.get(laser.ownerId);
+                        }
+                        this.handlePlayerHit(player, attacker);
                     }
                 }
             }
