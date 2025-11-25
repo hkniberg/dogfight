@@ -96,6 +96,10 @@ class AsteroidSpawner {
                 });
             }
             
+            // Generate rotation properties
+            const rotation = 0;
+            const rotationSpeed = random(-1, 1);
+            
             const asteroidData = {
                 id: `asteroid_${this.nextId++}`,
                 x: x,
@@ -103,7 +107,9 @@ class AsteroidSpawner {
                 vx: vx,
                 vy: vy,
                 size: size,
-                points: points
+                points: points,
+                rotation: rotation,
+                rotationSpeed: rotationSpeed
             };
             
             onSpawn(asteroidData);

@@ -249,6 +249,16 @@ body {
     right: 2rem;
 }
 
+#battle-code-hud {
+    font-size: 1.2rem;
+    color: #ffff00;
+    position: absolute;
+    left: 2rem;
+    text-shadow: 0 0 10px currentColor, 0 0 20px currentColor;
+    font-weight: bold;
+    letter-spacing: 0.2rem;
+}
+
 /* Game Over Screen */
 #gameover-screen {
     z-index: 20;
@@ -281,4 +291,99 @@ body {
 
 .gameover-buttons .primary-button:hover {
     background: rgba(255, 255, 255, 0.1);
+}
+
+/* Mode Selector */
+.mode-selector {
+    margin-bottom: 1.5rem;
+}
+
+.mode-selector h3 {
+    font-size: 1.2rem;
+    margin-bottom: 0.75rem;
+    text-shadow: 0 0 10px currentColor;
+}
+
+.mode-buttons {
+    display: flex;
+    gap: 1rem;
+    justify-content: center;
+}
+
+.mode-button {
+    padding: 0.6rem 1.5rem;
+    background: rgba(0, 0, 0, 0.5);
+    border: 2px solid rgba(0, 255, 255, 0.3);
+    color: rgba(0, 255, 255, 0.6);
+    font-family: 'Courier New', monospace;
+    font-size: 1rem;
+    cursor: pointer;
+    transition: all 0.3s;
+    border-radius: 5px;
+}
+
+.mode-button:hover {
+    border-color: rgba(0, 255, 255, 0.8);
+    color: rgba(0, 255, 255, 0.9);
+    box-shadow: 0 0 10px rgba(0, 255, 255, 0.3);
+}
+
+.mode-button.active {
+    border-color: #00FFFF;
+    color: #00FFFF;
+    box-shadow: 0 0 15px rgba(0, 255, 255, 0.5);
+    text-shadow: 0 0 10px currentColor;
+}
+
+/* Battle Code Section */
+.battle-code-section {
+    margin-bottom: 1.5rem;
+    padding: 1rem;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 10px;
+    border: 2px solid rgba(0, 255, 255, 0.3);
+    min-width: 400px;
+}
+
+.battle-code-section h3 {
+    font-size: 1.1rem;
+    margin-bottom: 0.75rem;
+    color: #00FFFF;
+    text-shadow: 0 0 10px currentColor;
+}
+
+.code-display {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+.code-display input {
+    flex: 1;
+    padding: 0.6rem;
+    background: rgba(0, 0, 0, 0.5);
+    border: 1px solid #00FFFF;
+    color: #00FFFF;
+    font-family: 'Courier New', monospace;
+    font-size: 1rem;
+    text-align: center;
+    letter-spacing: 0.1rem;
+}
+
+.code-info {
+    margin-top: 0.5rem;
+    font-size: 0.85rem;
+    color: rgba(0, 255, 255, 0.7);
+}
+
+#battle-code-input {
+    width: 100%;
+    padding: 0.6rem;
+    background: rgba(0, 0, 0, 0.5);
+    border: 1px solid #00FFFF;
+    color: #00FFFF;
+    font-family: 'Courier New', monospace;
+    font-size: 1rem;
+    text-align: center;
+    letter-spacing: 0.1rem;
 }

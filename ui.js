@@ -15,6 +15,21 @@ class UIManager {
         this.startButton = document.getElementById('start-game');
         this.resetStatsButton = document.getElementById('reset-stats');
         
+        // Mode selector elements
+        this.modeLocalButton = document.getElementById('mode-local');
+        this.modeHostButton = document.getElementById('mode-host');
+        this.modeJoinButton = document.getElementById('mode-join');
+        this.player2Section = document.getElementById('player2-section');
+        this.battleCodeSection = document.getElementById('battle-code-section');
+        this.hostCodeDisplay = document.getElementById('host-code-display');
+        this.joinCodeInput = document.getElementById('join-code-input');
+        this.battleCodeDisplayInput = document.getElementById('battle-code-display');
+        this.battleCodeInputField = document.getElementById('battle-code-input');
+        this.copyCodeButton = document.getElementById('copy-code');
+        
+        // Current mode
+        this.currentMode = 'local'; // 'local', 'host', 'join'
+        
         // Stats elements
         this.p1WinsDisplay = document.getElementById('p1-wins');
         this.p2WinsDisplay = document.getElementById('p2-wins');
@@ -23,6 +38,8 @@ class UIManager {
         // HUD elements
         this.scoresContainer = document.getElementById('scores-container');
         this.playerScores = {}; // Map of playerId -> score element
+        this.battleCodeHud = document.getElementById('battle-code-hud');
+        this.battleCodeHudText = document.getElementById('battle-code-hud-text');
         
         // Game over elements
         this.winnerText = document.getElementById('winner-text');
@@ -37,7 +54,148 @@ class UIManager {
     }
     
     setupEventListeners() {
-        // No additional setup needed for color pickers
+        // Mode selection
+        this.modeLocalButton.addEventListener('click', () => this.setMode('local'));
+        this.modeHostButton.addEventListener('click', () => this.setMode('host'));
+        this.modeJoinButton.addEventListener('click', () => this.setMode('join'));
+        
+        // Copy battle code
+        this.copyCodeButton.addEventListener('click', () => {
+            this.battleCodeDisplayInput.select();
+            document.execCommand('copy');
+            this.copyCodeButton.textContent = 'Copied!';
+            setTimeout(() => {
+                this.copyCodeButton.textContent = 'Copy';
+            }, 2000);
+        });
+    }
+    
+    generateRandomPilotName() {
+        const adjectives = [
+            'Swift', 'Bold', 'Stealth', 'Shadow', 'Thunder', 'Lightning', 
+            'Frost', 'Blaze', 'Storm', 'Vortex', 'Phantom', 'Cosmic',
+            'Neon', 'Cyber', 'Nova', 'Stellar', 'Quantum', 'Hyper'
+        ];
+        
+        const nouns = [
+            'Hawk', 'Falcon', 'Eagle', 'Viper', 'Phoenix', 'Dragon',
+            'Wolf', 'Tiger', 'Raven', 'Comet', 'Ace', 'Pilot',
+            'Racer', 'Hunter', 'Scout', 'Striker', 'Ghost', 'Runner'
+        ];
+        
+        const adjective = adjectives[Math.floor(Math.random() * adjectives.length)];
+        const noun = nouns[Math.floor(Math.random() * nouns.length)];
+        const number = Math.floor(Math.random() * 100);
+        
+        return `${adjective}${noun}${number}`;
+    }
+    
+    generateRandomBrightColor() {
+        // Generate bright, saturated colors that are visible on dark background
+        const hue = Math.floor(Math.random() * 360);
+        const saturation = 70 + Math.floor(Math.random() * 30); // 70-100%
+        const lightness = 50 + Math.floor(Math.random() * 20);  // 50-70%
+        
+        // Convert HSL to hex
+        const h = hue / 360;
+        const s = saturation / 100;
+        const l = lightness / 100;
+        
+        const hslToRgb = (h, s, l) => {
+            let r, g, b;
+            if (s === 0) {
+                r = g = b = l;
+            } else {
+                const hue2rgb = (p, q, t) => {
+                    if (t < 0) t += 1;
+                    if (t > 1) t -= 1;
+                    if (t < 1/6) return p + (q - p) * 6 * t;
+                    if (t < 1/2) return q;
+                    if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+                    return p;
+                };
+                const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+                const p = 2 * l - q;
+                r = hue2rgb(p, q, h + 1/3);
+                g = hue2rgb(p, q, h);
+                b = hue2rgb(p, q, h - 1/3);
+            }
+            return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+        };
+        
+        const [r, g, b] = hslToRgb(h, s, l);
+        return '#' + [r, g, b].map(x => x.toString(16).padStart(2, '0')).join('');
+    }
+    
+    setMode(mode) {
+        this.currentMode = mode;
+        
+        // Update button states
+        this.modeLocalButton.classList.remove('active');
+        this.modeHostButton.classList.remove('active');
+        this.modeJoinButton.classList.remove('active');
+        
+        if (mode === 'local') {
+            this.modeLocalButton.classList.add('active');
+            this.player2Section.style.display = 'block';
+            this.battleCodeSection.style.display = 'none';
+            
+            // Reset to default names for local play
+            if (!this.player1NameInput.value || this.player1NameInput.value.match(/^(Swift|Bold|Stealth|Shadow|Thunder)/)) {
+                this.player1NameInput.value = 'Player 1';
+                this.player1ColorInput.value = '#00ffff';
+            }
+            if (!this.player2NameInput.value) {
+                this.player2NameInput.value = 'Player 2';
+                this.player2ColorInput.value = '#ff1493';
+            }
+        } else if (mode === 'host') {
+            this.modeHostButton.classList.add('active');
+            this.player2Section.style.display = 'none';
+            this.battleCodeSection.style.display = 'block';
+            this.hostCodeDisplay.style.display = 'none'; // Show after connection
+            this.joinCodeInput.style.display = 'none';
+            
+            // Generate random name and color for hosting
+            this.player1NameInput.value = this.generateRandomPilotName();
+            this.player1ColorInput.value = this.generateRandomBrightColor();
+        } else if (mode === 'join') {
+            this.modeJoinButton.classList.add('active');
+            this.player2Section.style.display = 'none';
+            this.battleCodeSection.style.display = 'block';
+            this.hostCodeDisplay.style.display = 'none';
+            this.joinCodeInput.style.display = 'block';
+            
+            // Generate random name and color for joining
+            this.player1NameInput.value = this.generateRandomPilotName();
+            this.player1ColorInput.value = this.generateRandomBrightColor();
+        }
+    }
+    
+    showBattleCode(code) {
+        this.battleCodeDisplayInput.value = code;
+        this.hostCodeDisplay.style.display = 'block';
+    }
+    
+    getBattleCode() {
+        return this.battleCodeInputField.value.trim();
+    }
+    
+    getMode() {
+        return this.currentMode;
+    }
+    
+    showBattleCodeInHud(code) {
+        if (this.battleCodeHud && this.battleCodeHudText) {
+            this.battleCodeHudText.textContent = code;
+            this.battleCodeHud.style.display = 'block';
+        }
+    }
+    
+    hideBattleCodeInHud() {
+        if (this.battleCodeHud) {
+            this.battleCodeHud.style.display = 'none';
+        }
     }
     
     getPlayerConfig() {
