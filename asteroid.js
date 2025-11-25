@@ -178,7 +178,10 @@ class Asteroid {
         // Chase behavior with predictive targeting
         if (this.chaseActive && this.chaseTarget && this.chaseTarget.alive && !this.chaseTarget.invisible) {
             // Calculate player's velocity
-            const playerSpeed = this.chaseTarget.speeds[this.chaseTarget.speedLevel];
+            // Use speeds array from player or from settings (for remote players)
+            const speeds = this.chaseTarget.speeds || GAME_SETTINGS.player.speeds;
+            const speedLevel = this.chaseTarget.speedLevel || 0;
+            const playerSpeed = speeds[speedLevel];
             const playerVx = Math.cos(this.chaseTarget.angle) * playerSpeed;
             const playerVy = Math.sin(this.chaseTarget.angle) * playerSpeed;
             
