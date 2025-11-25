@@ -83,6 +83,12 @@ class GameNetworkFacade {
     handlePlayerDied(data) {
         console.log(`[GameNetwork] Player ${data.victimId} killed by ${data.killerId}`);
         
+        // Skip if this is our own local player (we already handled the death locally)
+        if (this.game.playerManager.isLocalPlayer(data.victimId)) {
+            console.log('[GameNetwork] Ignoring death of our own local player');
+            return;
+        }
+        
         // Get victim and attacker
         const victimCtrl = this.game.playerManager.getPlayer(data.victimId);
         const attackerCtrl = data.killerId ? this.game.playerManager.getPlayer(data.killerId) : null;
@@ -97,9 +103,7 @@ class GameNetworkFacade {
         this.game.particles.createExplosion(victimCtrl.x, victimCtrl.y, victimCtrl.color, 30);
         
         // Mark remote player as dead (will be set to alive again via network update when they respawn)
-        if (victimCtrl.isRemote()) {
-            victimCtrl.player.alive = false;
-        }
+        victimCtrl.player.alive = false;
         
         // Update score
         if (attackerCtrl) {
@@ -222,6 +226,48 @@ class GameNetworkFacade {
             shields: playerCtrl.shields,
             invulnerable: playerCtrl.invulnerable
         });
+    }
+    
+    broadcastDeath(victimId, killerId) {
+        if (!this.isOnlineMode()) return;
+        
+        this.network.sendDeath(victimId, killerId);
+    }
+    
+    broadcastWeaponFire(playerCtrl, weaponData) {
+        if (!this.isOnlineMode()) return;
+        
+        this.network.sendWeaponFire(weaponData);
+    }
+    
+    broadcastPowerUpPickup(playerCtrl, powerupId, powerupType) {
+        if (!this.isOnlineMode()) return;
+        
+        this.network.sendPowerUpPickup(playerCtrl.id, powerupId, powerupType);
+    }
+    
+    broadcastAsteroidDamage(x, y, damage) {
+        if (!this.isOnlineMode()) return;
+        
+        this.network.sendAsteroidDamage(x, y, damage);
+    }
+    
+    broadcastAsteroidDestroyed() {
+        if (!this.isOnlineMode()) return;
+        
+        this.network.notifyAsteroidDestroyed();
+    }
+    
+    broadcastReverseEffect(playerCtrl, affectedPlayerIds) {
+        if (!this.isOnlineMode()) return;
+        
+        this.network.sendReverseEffect(playerCtrl.id, affectedPlayerIds);
+    }
+    
+    broadcastAsteroidChase(playerCtrl, targetId) {
+        if (!this.isOnlineMode()) return;
+        
+        this.network.sendAsteroidChase(targetId);
     }
     
     // Update wrapper

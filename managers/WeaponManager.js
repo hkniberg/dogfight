@@ -85,8 +85,8 @@ class WeaponManager {
         this.game.audio.playPowerUp();
         
         // Send to network
-        if (this.game.network && this.game.network.constructor.name === 'PeerNetworkManager') {
-            this.game.network.sendReverseEffect(playerCtrl.id, opponents.map(p => p.id));
+        if (this.game.networkFacade) {
+            this.game.networkFacade.broadcastReverseEffect(playerCtrl, opponents.map(p => p.id));
         }
     }
     
@@ -109,8 +109,8 @@ class WeaponManager {
                 this.game.particles.createExplosion(asteroid.x, asteroid.y, '#ff00ff', 20, 200);
                 
                 // Send to network
-                if (this.game.network && this.game.network.constructor.name === 'PeerNetworkManager') {
-                    this.game.network.sendAsteroidChase(chaseTarget.id);
+                if (this.game.networkFacade) {
+                    this.game.networkFacade.broadcastAsteroidChase(playerCtrl, chaseTarget.id);
                 }
             }
         }
@@ -118,11 +118,12 @@ class WeaponManager {
     
     // Broadcast weapon fire to network
     broadcastWeaponFire(playerCtrl, result) {
-        if (!this.game.network || this.game.network.constructor.name !== 'PeerNetworkManager') {
+        if (!this.game.networkFacade) {
             return;
         }
         
         const weaponData = {
+            playerId: playerCtrl.id,
             weaponType: result.type,
             x: playerCtrl.x,
             y: playerCtrl.y,
@@ -134,7 +135,7 @@ class WeaponManager {
             weaponData.isHomingBomb = result.weapon[0].isHoming;
         }
         
-        this.game.network.sendWeaponFire(playerCtrl.id, weaponData);
+        this.game.networkFacade.broadcastWeaponFire(playerCtrl, weaponData);
     }
     
     // Create weapon from network event (for remote players)
@@ -252,8 +253,8 @@ class WeaponManager {
                     this.game.shrapnel.push(...asteroid.createShrapnel());
                     this.game.particles.createExplosion(asteroid.x, asteroid.y, '#888888', 30);
                     
-                    if (this.game.network) {
-                        this.game.network.notifyAsteroidDestroyed();
+                    if (this.game.networkFacade) {
+                        this.game.networkFacade.broadcastAsteroidDestroyed();
                     }
                 }
             }

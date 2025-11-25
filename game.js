@@ -306,6 +306,14 @@ class Game {
                         this.canvas.height
                     );
                     victim.respawn(pos.x, pos.y, random(0, Math.PI * 2));
+                    
+                    // Immediately broadcast respawn state to network
+                    if (this.networkFacade && this.networkFacade.isOnlineMode()) {
+                        const victimCtrl = this.playerManager.getPlayer(victim.id);
+                        if (victimCtrl) {
+                            this.networkFacade.broadcastPlayerUpdate(victimCtrl);
+                        }
+                    }
                 }
             }, victim.respawnDelay * 1000);
         }
