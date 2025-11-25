@@ -190,22 +190,31 @@ body {
     position: relative;
 }
 
+#game-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    gap: 0;
+}
+
 #game-canvas {
     display: block;
     background: #1a1a2e;
 }
 
 #hud {
-    position: absolute;
-    top: 0;
     width: 100%;
+    max-width: 1600px;
     display: flex;
     justify-content: center;
     align-items: center;
-    padding: 1rem 2rem;
+    padding: 0.75rem 2rem;
     gap: 2rem;
     font-weight: bold;
-    pointer-events: none;
+    background: rgba(10, 10, 15, 0.9);
+    border-bottom: 1px solid rgba(0, 255, 255, 0.2);
     z-index: 10;
 }
 
