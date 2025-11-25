@@ -1,4 +1,4 @@
-// Main game engine and loop
+// Main game engine and loop - Refactored to use manager systems
 
 class Game {
     constructor() {
@@ -16,33 +16,35 @@ class Game {
         // Game state
         this.state = 'MENU'; // MENU, PLAYING, GAME_OVER
         this.paused = false;
-        this.matchWon = false; // Track if match has been won
+        this.matchWon = false;
         
-        // Managers
+        // Core UI/Audio/Particles
         this.ui = new UIManager();
         this.audio = new AudioManager();
         this.particles = new ParticleSystem();
         
-        // Network manager (local mode for now)
+        // Game systems (initialized in startGame)
+        this.playerManager = null;
+        this.weaponManager = null;
+        this.collisionSystem = null;
+        this.entityManager = null;
+        
+        // Network
         this.network = null;
-        this.battleCodeForHud = null; // Battle code to display in HUD (for host)
+        this.networkFacade = null;
+        this.battleCodeForHud = null;
         
-        // Players
-        this.myPlayers = []; // Players controlled by this client (1-2 depending on mode)
-        this.remotePlayers = new Map(); // id -> RemotePlayer (for online mode)
-        
-        // Game objects
-        this.bullets = [];
-        this.remoteBullets = []; // Bullets from remote players
+        // Legacy arrays for compatibility with collision system
+        // These reference the actual arrays in managers
         this.homingMissiles = [];
         this.lasers = [];
         this.bombs = [];
+        this.remoteBullets = [];
         this.asteroid = null;
         this.shrapnel = [];
-        this.powerUps = []; // Power-ups now managed by network spawning
         
         // Score
-        this.playerScores = new Map(); // playerId -> score
+        this.playerScores = new Map();
         this.winScore = GAME_SETTINGS.winScore;
         
         // Timing
@@ -65,21 +67,17 @@ class Game {
     }
     
     updateCanvasScale() {
-        // Scale canvas to fit window while maintaining aspect ratio
         const windowWidth = window.innerWidth;
         const windowHeight = window.innerHeight;
         const canvasWidth = GAME_SETTINGS.canvas.width;
         const canvasHeight = GAME_SETTINGS.canvas.height;
         
-        // Reserve space for HUD (approximately 60px)
         const availableHeight = windowHeight - 60;
         
-        // Calculate scale to fit available space
         const scaleX = windowWidth / canvasWidth;
         const scaleY = availableHeight / canvasHeight;
-        const scale = Math.min(scaleX, scaleY, 1); // Don't scale up beyond 100%
+        const scale = Math.min(scaleX, scaleY, 1);
         
-        // Apply CSS transform to scale (no absolute positioning - let flexbox handle it)
         this.canvas.style.width = `${canvasWidth * scale}px`;
         this.canvas.style.height = `${canvasHeight * scale}px`;
     }
@@ -88,7 +86,6 @@ class Game {
         window.addEventListener('keydown', (e) => {
             this.keys[e.key] = true;
             
-            // Escape key returns to menu
             if (e.key === 'Escape' && this.state === 'PLAYING') {
                 this.returnToMenu();
                 return;
@@ -98,7 +95,6 @@ class Game {
                 this.handleInput(e.key, true);
             }
             
-            // Prevent arrow keys from scrolling
             if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
                 e.preventDefault();
             }
@@ -110,156 +106,53 @@ class Game {
     }
     
     handleInput(key, pressed) {
-        if (!pressed) return;
+        if (!pressed || !this.playerManager) return;
         
-        // Each player responds to their own keys
-        for (const player of this.myPlayers) {
-            if (!player) continue;
-            
-            const keys = player.controls;
-            if (!keys) continue;
-            
-            if (key === keys.up) player.speedUp();
-            if (key === keys.down) player.speedDown();
-            if (key === keys.left) player.turnLeft();
-            if (key === keys.right) player.turnRight();
-            if (key === keys.fire) this.handleFire(player);
-        }
-    }
-    
-    handleFire(player) {
-        // Find target player (for homing missiles, reverse, asteroidChase, etc.)
-        let targetPlayer = null;
-        
-        if (this.myPlayers.length > 1) {
-            // Local mode: find other local player
-            targetPlayer = this.myPlayers.find(p => p !== player);
-        } else if (this.remotePlayers.size > 0) {
-            // Online mode: pick first remote opponent
-            const opponents = Array.from(this.remotePlayers.values());
-            targetPlayer = opponents.find(p => p.alive && !p.invisible) || opponents[0];
-        }
-        
-        const result = player.fire(targetPlayer);
-        if (!result) return;
-        
-        // Send weapon fire event to network (online mode)
-        if (this.network && this.network.constructor.name === 'PeerNetworkManager') {
-            const weaponData = {
-                weaponType: result.type,
-                x: player.x,
-                y: player.y,
-                angle: player.angle
-            };
-            
-            // For bombs, include if it's homing
-            if (result.type === 'bomb' && result.weapon && result.weapon.length > 0) {
-                weaponData.isHomingBomb = result.weapon[0].isHoming;
-            }
-            
-            this.network.sendWeaponFire(player.id, weaponData);
-        }
-        
-        // Handle special effect power-ups (affect opponent)
-        if (result.type === 'reverse') {
-            // In multiplayer, affect ALL opponents
-            const opponents = this.getOpponents(player.id);
-            
-            for (const opponent of opponents) {
-                opponent.activateReverse();
-                this.particles.createExplosion(opponent.x, opponent.y, '#ffff00', 15, 150);
-                
-                // Reverse all existing homing missiles from this opponent
-                for (let missile of this.homingMissiles) {
-                    if (missile.ownerId === opponent.id) {
-                        missile.targetPlayer = opponent; // Now targets the shooter!
-                    }
-                }
-            }
-            
-            this.audio.playPowerUp();
-            
-            // Send reverse effect to network
-            if (this.network && this.network.constructor.name === 'PeerNetworkManager') {
-                this.network.sendReverseEffect(player.id, opponents.map(p => p.id));
-            }
-            
+        // Check if this is a fire key
+        const playerCtrl = this.playerManager.getPlayerByFireKey(key);
+        if (playerCtrl) {
+            const target = this.playerManager.findTarget(playerCtrl.id);
+            this.weaponManager.handlePlayerFire(playerCtrl, target);
             return;
         }
         
-        if (result.type === 'asteroidChase') {
-            if (this.asteroid && this.asteroid.alive) {
-                // Pick a target: in 2-player local it's the other player, in online pick first opponent
-                let chaseTarget = targetPlayer;
-                if (!chaseTarget && this.remotePlayers.size > 0) {
-                    chaseTarget = Array.from(this.remotePlayers.values())[0];
-                }
-                
-                if (chaseTarget) {
-                    this.asteroid.startChasing(chaseTarget);
-                    this.audio.playPowerUp();
-                    this.particles.createExplosion(this.asteroid.x, this.asteroid.y, '#ff00ff', 20, 200);
-                    
-                    // Send asteroid chase command to network
-                    if (this.network && this.network.constructor.name === 'PeerNetworkManager') {
-                        this.network.sendAsteroidChase(chaseTarget.id);
-                    }
-                }
-            }
-            return;
-        }
-        
-        // Handle weapon arrays (for multishot support)
-        const weapons = Array.isArray(result.weapon) ? result.weapon : [result.weapon];
-        
-        if (result.type === 'bullets') {
-            this.audio.playShoot();
-        } else if (result.type === 'homing') {
-            this.homingMissiles.push(...weapons);
-            this.audio.playShoot();
-        } else if (result.type === 'laser') {
-            this.lasers.push(...weapons);
-            this.audio.playLaserHum();
-        } else if (result.type === 'bomb') {
-            this.bombs.push(...weapons);
-        }
+        // Handle other inputs (movement)
+        this.playerManager.handleInput(key, pressed);
     }
     
     async startGame() {
-        // Initialize audio on first interaction
         this.audio.init();
         
-        // Get player configuration and mode
         const config = this.ui.getPlayerConfig();
         const mode = this.ui.getMode();
         
         try {
-            // Initialize network manager based on mode
+            // Initialize game systems
+            this.playerManager = new PlayerManager(this);
+            this.weaponManager = new WeaponManager(this);
+            this.collisionSystem = new CollisionSystem(this);
+            this.entityManager = new EntityManager(this);
+            
+            // Setup references for collision system compatibility
+            this.updateManagerReferences();
+            
+            // Initialize network based on mode
             if (mode === 'local') {
-                // Local multiplayer
                 this.network = new LocalNetworkManager(this.canvas.width, this.canvas.height);
-                this.setupNetworkCallbacks();
-                
-                // Create both players locally
+                this.networkFacade = new GameNetworkFacade(this.network, this);
                 await this.setupLocalPlayers(config);
                 
             } else if (mode === 'host') {
-                // Host online game
                 this.network = new PeerNetworkManager(this.canvas.width, this.canvas.height, true);
-                this.setupNetworkCallbacks();
+                this.networkFacade = new GameNetworkFacade(this.network, this);
                 
-                // Connect as host
                 const myPlayerId = await this.network.connect(config.player1.name, config.player1.color);
-                
-                // Show battle code in menu and HUD
                 this.ui.showBattleCode(this.network.myPeerId);
-                this.battleCodeForHud = this.network.myPeerId; // Store for HUD display
+                this.battleCodeForHud = this.network.myPeerId;
                 
-                // Create local player
                 await this.setupOnlinePlayer(myPlayerId, config.player1, true);
                 
             } else if (mode === 'join') {
-                // Join online game
                 const battleCode = this.ui.getBattleCode();
                 if (!battleCode) {
                     alert('Please enter a battle code to join!');
@@ -267,12 +160,9 @@ class Game {
                 }
                 
                 this.network = new PeerNetworkManager(this.canvas.width, this.canvas.height, false, battleCode);
-                this.setupNetworkCallbacks();
+                this.networkFacade = new GameNetworkFacade(this.network, this);
                 
-                // Connect as client
                 const myPlayerId = await this.network.connect(config.player1.name, config.player1.color);
-                
-                // Create local player
                 await this.setupOnlinePlayer(myPlayerId, config.player1, false);
             }
             
@@ -284,26 +174,18 @@ class Game {
         
         // Reset score and match state
         this.playerScores.clear();
-        // Initialize scores for all players
-        for (const player of this.myPlayers) {
-            this.playerScores.set(player.id, 0);
+        for (const playerCtrl of this.playerManager.getLocalPlayers()) {
+            this.playerScores.set(playerCtrl.id, 0);
         }
         this.matchWon = false;
         
-        // Clear game objects
-        this.bullets = [];
-        this.remoteBullets = [];
-        this.homingMissiles = [];
-        this.lasers = [];
-        this.bombs = [];
-        this.asteroid = null;
-        this.shrapnel = [];
-        this.powerUps = [];
+        // Clear all game entities
+        this.weaponManager.clear();
+        this.entityManager.clear();
         this.particles.clear();
-        this.remotePlayers.clear();
         
-        // Initialize score display for all players
-        this.ui.initScores(this.myPlayers);
+        // Initialize score display
+        this.ui.initScores(this.playerManager.getAllPlayers().map(p => p.player));
         
         // Show battle code in HUD if hosting
         if (this.battleCodeForHud) {
@@ -311,29 +193,21 @@ class Game {
         }
         
         this.ui.showScreen('game');
-        
         this.state = 'PLAYING';
     }
     
     async setupLocalPlayers(config) {
-        // Create players back-to-back at center, facing away from each other
         const centerX = this.canvas.width * 0.5;
         const centerY = this.canvas.height * 0.5;
         const spacing = GAME_SETTINGS.player.startSpacing;
         
-        const p1StartX = centerX - spacing;
-        const p1StartY = centerY;
-        const p2StartX = centerX + spacing;
-        const p2StartY = centerY;
-        
-        // Connect players through network (gets player IDs)
         const p1Id = this.network.connect(config.player1.name, config.player1.color);
         const p2Id = this.network.connect(config.player2.name, config.player2.color);
         
         const player1 = new Player(
             p1Id,
-            p1StartX, p1StartY,
-            Math.PI, // Facing left
+            centerX - spacing, centerY,
+            Math.PI,
             config.player1.color,
             config.player1.name,
             { up: 'w', down: 's', left: 'a', right: 'd', fire: 'e' }
@@ -341,28 +215,25 @@ class Game {
         
         const player2 = new Player(
             p2Id,
-            p2StartX, p2StartY,
-            0, // Facing right
+            centerX + spacing, centerY,
+            0,
             config.player2.color,
             config.player2.name,
             { up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight', fire: '-' }
         );
         
-        // Set both players to starting speed
         player1.speedLevel = GAME_SETTINGS.player.defaultSpeedLevel;
         player2.speedLevel = GAME_SETTINGS.player.defaultSpeedLevel;
         
-        // Add to myPlayers array
-        this.myPlayers = [player1, player2];
+        this.playerManager.addPlayer(player1, true);
+        this.playerManager.addPlayer(player2, true);
     }
     
     async setupOnlinePlayer(playerId, playerConfig, isHost) {
-        // Random spawn position for online mode
         const x = Math.random() * this.canvas.width;
         const y = Math.random() * this.canvas.height;
         const angle = Math.random() * Math.PI * 2;
         
-        // Create local player
         const player = new Player(
             playerId,
             x, y, angle,
@@ -372,308 +243,89 @@ class Game {
         );
         
         player.speedLevel = GAME_SETTINGS.player.defaultSpeedLevel;
-        
-        // In online mode, only control one player
-        this.myPlayers = [player];
+        this.playerManager.addPlayer(player, true);
     }
     
-    setupNetworkCallbacks() {
-        // Player joined (for online mode)
-        this.network.onPlayerJoined((data) => {
-            console.log(`[Game] Player joined: ${data.name} (ID: ${data.id})`);
-            
-            // Don't create remote player for ourselves
-            if (this.myPlayers.some(p => p.id === data.id)) return;
-            
-            // Create remote player
-            const remotePlayer = new RemotePlayer(data.id, data.name, data.color);
-            // Set initial position (will be updated via network)
-            remotePlayer.displayPos = {
-                x: Math.random() * this.canvas.width,
-                y: Math.random() * this.canvas.height,
-                angle: Math.random() * Math.PI * 2
-            };
-            remotePlayer.targetPos = { ...remotePlayer.displayPos };
-            
-            this.remotePlayers.set(data.id, remotePlayer);
-            
-            // Update score display
-            const allPlayers = [...this.myPlayers, ...Array.from(this.remotePlayers.values())];
-            this.ui.initScores(allPlayers);
-        });
-        
-        // Player update (position/state from network)
-        this.network.onPlayerUpdate((data) => {
-            const remotePlayer = this.remotePlayers.get(data.id);
-            if (remotePlayer) {
-                remotePlayer.onNetworkUpdate(data);
-            }
-        });
-        
-        // Weapon fired by remote player
-        this.network.onWeaponFired((data) => {
-            console.log(`[Game] Weapon fired by player ${data.playerId}: ${data.weaponType}`);
-            
-            // Skip if it's one of our local players (already created locally)
-            if (this.myPlayers.some(p => p.id === data.playerId)) {
-                return;
-            }
-            
-            // Create weapon at specified position for remote players
-            this.createWeaponFromNetwork(data);
-        });
-        
-        // Player died
-        this.network.onPlayerDied((data) => {
-            console.log(`[Game] Player ${data.victimId} killed by ${data.killerId}`);
-            // Handle death for local or remote player
-            this.handlePlayerDeath(data.victimId, data.killerId);
-        });
-        
-        // Player left
-        this.network.onPlayerLeft((data) => {
-            console.log(`[Game] Player left: ${data.id}`);
-            
-            // Check if host left (game over for clients)
-            if (data.isHost) {
-                alert('Host disconnected. Returning to menu.');
-                this.returnToMenu();
-                return;
-            }
-            
-            // Remove remote player
-            this.remotePlayers.delete(data.id);
-            
-            // Update score display
-            const allPlayers = [...this.myPlayers, ...Array.from(this.remotePlayers.values())];
-            this.ui.initScores(allPlayers);
-        });
-        
-        // Power-up spawned by network
-        this.network.onPowerUpSpawned((data) => {
-            this.powerUps.push(new PowerUp(data.x, data.y, data.type));
-            this.powerUps[this.powerUps.length - 1].id = data.id;
-            this.powerUps[this.powerUps.length - 1].seq = data.seq;
-        });
-        
-        // Power-up collected
-        this.network.onPowerUpCollected((data) => {
-            // Remove powerup from map
-            this.powerUps = this.powerUps.filter(p => p.id !== data.id);
-            
-            // Apply powerup effect to the player who collected it
-            // Check if it's one of our local players
-            const localPlayer = this.myPlayers.find(p => p.id === data.playerId);
-            if (localPlayer) {
-                // It's our local player - already applied locally, skip
-                return;
-            }
-            
-            // It's a remote player - apply the effect to them
-            const remotePlayer = this.remotePlayers.get(data.playerId);
-            if (remotePlayer && data.powerupType) {
-                this.applyPowerUpToRemote(remotePlayer, data.powerupType);
-            }
-        });
-        
-        // Asteroid spawned by network
-        this.network.onAsteroidSpawned((data) => {
-            this.asteroid = this.createAsteroidFromData(data);
-        });
-        
-        // Asteroid damaged by network
-        this.network.onAsteroidDamaged((data) => {
-            if (this.asteroid && this.asteroid.alive) {
-                this.asteroid.takeDamage(data.x, data.y, data.damage);
-                this.particles.createDebris(data.x, data.y, '#888888', 3);
-            }
-        });
-        
-        // Asteroid destroyed by network
-        this.network.onAsteroidDestroyed(() => {
-            if (this.asteroid && this.asteroid.alive) {
-                this.shrapnel.push(...this.asteroid.createShrapnel());
-                this.particles.createExplosion(this.asteroid.x, this.asteroid.y, '#888888', 30);
-                this.asteroid = null;
-            }
-        });
-        
-        // Reverse effect activated
-        this.network.onReverseEffect((data) => {
-            // Apply reverse effect to affected players
-            for (const targetId of data.affectedPlayerIds) {
-                // Check if it's one of our local players
-                const localPlayer = this.myPlayers.find(p => p.id === targetId);
-                if (localPlayer) {
-                    localPlayer.activateReverse();
-                    this.particles.createExplosion(localPlayer.x, localPlayer.y, '#ffff00', 15, 150);
-                    
-                    // Retarget all homing missiles from this player
-                    for (let missile of this.homingMissiles) {
-                        if (missile.ownerId === localPlayer.id) {
-                            missile.targetPlayer = localPlayer;
-                        }
-                    }
-                }
-                
-                // Check if it's a remote player
-                const remotePlayer = this.remotePlayers.get(targetId);
-                if (remotePlayer) {
-                    remotePlayer.reversed = true;
-                    remotePlayer.reversedTime = 0;
-                    this.particles.createExplosion(remotePlayer.displayPos.x, remotePlayer.displayPos.y, '#ffff00', 15, 150);
-                    
-                    // Retarget missiles from remote player (if we're tracking them)
-                    for (let missile of this.homingMissiles) {
-                        if (missile.ownerId === remotePlayer.id) {
-                            // Can't directly retarget remote player's missiles, but mark them
-                            // This is acceptable for the game design
-                        }
-                    }
-                }
-            }
-            
-            this.audio.playPowerUp();
-        });
-        
-        // Asteroid chase activated
-        this.network.onAsteroidChase((data) => {
-            if (this.asteroid && this.asteroid.alive) {
-                // Find the target player
-                let chaseTarget = this.myPlayers.find(p => p.id === data.targetId);
-                if (!chaseTarget) {
-                    chaseTarget = this.remotePlayers.get(data.targetId);
-                }
-                
-                if (chaseTarget) {
-                    this.asteroid.startChasing(chaseTarget);
-                    this.audio.playPowerUp();
-                    this.particles.createExplosion(this.asteroid.x, this.asteroid.y, '#ff00ff', 20, 200);
-                }
-            }
-        });
+    // Update references for collision system compatibility
+    updateManagerReferences() {
+        if (this.weaponManager) {
+            this.homingMissiles = this.weaponManager.homingMissiles;
+            this.lasers = this.weaponManager.lasers;
+            this.bombs = this.weaponManager.bombs;
+            this.remoteBullets = this.weaponManager.remoteBullets;
+        }
+        if (this.entityManager) {
+            this.asteroid = this.entityManager.asteroid;
+            this.shrapnel = this.entityManager.shrapnel;
+        }
     }
     
-    getOpponents(playerId) {
-        // Get all players except the specified one
-        const opponents = [];
-        
-        for (const player of this.myPlayers) {
-            if (player.id !== playerId) {
-                opponents.push(player);
-            }
-        }
-        
-        for (const player of this.remotePlayers.values()) {
-            if (player.id !== playerId) {
-                opponents.push(player);
-            }
-        }
-        
-        return opponents;
-    }
-    
-    createWeaponFromNetwork(data) {
-        // Find the player who fired (local or remote)
-        let firingPlayer = this.myPlayers.find(p => p.id === data.playerId);
-        if (!firingPlayer) {
-            // It's a remote player
-            firingPlayer = this.remotePlayers.get(data.playerId);
-        }
-        
-        if (!firingPlayer) {
-            console.warn('[Game] Unknown player fired weapon:', data.playerId);
+    handlePlayerHit(victim, attacker) {
+        // Check for shields
+        if (victim.shields > 0) {
+            victim.removeShield();
+            this.audio.playShieldHit();
+            this.particles.createExplosion(victim.x, victim.y, '#0066ff', 10, 100);
             return;
         }
         
-        const color = firingPlayer.color;
+        // Player dies
+        victim.die();
+        this.audio.playExplosion();
+        this.particles.createExplosion(victim.x, victim.y, victim.color, 30);
         
-        // Create weapons based on type
-        if (data.weaponType === 'bullets') {
-            // Create bullet(s) - could be multishot
-            const bullet = new Bullet(data.x, data.y, data.angle, color, data.playerId);
+        // Update score
+        if (attacker) {
+            const currentScore = this.playerScores.get(attacker.id) || 0;
+            this.playerScores.set(attacker.id, currentScore + 1);
+            this.ui.updatePlayerScore(attacker.id, currentScore + 1);
             
-            // For remote players, add to their bullets array if they have one
-            // Otherwise add to a global array (for remote players)
-            if (firingPlayer.bullets) {
-                firingPlayer.bullets.push(bullet);
-            } else {
-                // Remote player - we need to track their bullets separately
-                // For now, add to a remote bullets array
-                if (!this.remoteBullets) {
-                    this.remoteBullets = [];
+            // Check for win
+            if (currentScore + 1 >= this.winScore && !this.matchWon) {
+                this.endGame(attacker);
+                return;
+            }
+        }
+        
+        // Respawn player
+        if (!this.matchWon) {
+            setTimeout(() => {
+                if (this.state === 'PLAYING' && !this.matchWon) {
+                    const allPlayers = this.playerManager.getAllPlayers().map(p => p.player);
+                    const pos = getRandomSpawnPosition(
+                        allPlayers,
+                        200,
+                        this.canvas.width,
+                        this.canvas.height
+                    );
+                    victim.respawn(pos.x, pos.y, random(0, Math.PI * 2));
                 }
-                this.remoteBullets.push(bullet);
-            }
-            
-            this.audio.playShoot();
-        } else if (data.weaponType === 'homing') {
-            // Find a target (pick first opponent of the firing player)
-            let targetPlayer = null;
-            const opponents = this.getOpponents(data.playerId);
-            if (opponents.length > 0) {
-                // Target first visible, non-invisible opponent
-                targetPlayer = opponents.find(p => p.alive && !p.invisible) || opponents[0];
-            }
-            
-            const missile = new HomingMissile(data.x, data.y, data.angle, color, data.playerId, targetPlayer);
-            this.homingMissiles.push(missile);
-            this.audio.playShoot();
-        } else if (data.weaponType === 'laser') {
-            // Lasers need a player reference to follow their rotation
-            // For remote players, we need to pass the RemotePlayer or local Player object
-            const laser = new Laser(firingPlayer, color, data.playerId, 0);
-            this.lasers.push(laser);
-            this.audio.playLaserHum();
-        } else if (data.weaponType === 'bomb') {
-            // Check if it's a homing bomb by looking for targetId in data
-            let targetPlayer = null;
-            if (data.isHomingBomb) {
-                const opponents = this.getOpponents(data.playerId);
-                if (opponents.length > 0) {
-                    targetPlayer = opponents.find(p => p.alive && !p.invisible) || opponents[0];
-                }
-            }
-            const bomb = new Bomb(data.x, data.y, data.angle, color, data.playerId, targetPlayer);
-            this.bombs.push(bomb);
+            }, victim.respawnDelay * 1000);
         }
     }
     
-    handlePlayerDeath(victimId, killerId) {
-        // Handle death for local or remote players
-        // TODO: Implement death handling
-        console.log(`[Game] Handling death: victim=${victimId}, killer=${killerId}`);
-    }
-    
-    createAsteroidFromData(data) {
-        // Create asteroid with specific properties from network
-        const asteroid = new Asteroid(data.x, data.y, this.canvas.width, this.canvas.height);
-        asteroid.size = data.size;
-        asteroid.vx = data.vx;
-        asteroid.vy = data.vy;
-        asteroid.points = data.points;
-        asteroid.rotation = data.rotation || 0;
-        asteroid.rotationSpeed = data.rotationSpeed || 0;
-        return asteroid;
+    endGame(winner) {
+        this.matchWon = true;
+        this.ui.recordWin(winner.id);
+        this.ui.showGameOver(winner.name, winner.color);
     }
     
     returnToMenu() {
         this.state = 'MENU';
         this.matchWon = false;
         
-        // Hide battle code from HUD
         this.ui.hideBattleCodeInHud();
         this.battleCodeForHud = null;
         
-        // Disconnect from network
-        if (this.network) {
-            this.network.disconnect();
-            this.network = null;
+        if (this.networkFacade) {
+            this.networkFacade.disconnect();
         }
+        this.network = null;
+        this.networkFacade = null;
         
-        // Clear players
-        this.myPlayers = [];
-        this.remotePlayers.clear();
+        if (this.playerManager) {
+            this.playerManager.clear();
+        }
         
         this.ui.showScreen('menu');
     }
@@ -681,7 +333,6 @@ class Game {
     gameLoop(currentTime) {
         requestAnimationFrame((time) => this.gameLoop(time));
         
-        // Calculate delta time
         const dt = Math.min((currentTime - this.lastTime) / 1000, 0.1) * this.gameSpeed;
         this.lastTime = currentTime;
         
@@ -718,841 +369,54 @@ class Game {
         }
     }
     
-    drawRemotePlayer(remotePlayer) {
-        const pos = remotePlayer.displayPos;
-        const size = 12;
-        
-        this.ctx.save();
-        this.ctx.translate(pos.x, pos.y);
-        this.ctx.rotate(pos.angle);
-        
-        // Invisibility effect
-        if (remotePlayer.invisible) {
-            const pulse = (Math.sin(Date.now() * GAME_SETTINGS.powerups.invisibility.pulseSpeed) + 1) / 2;
-            const alphaRange = GAME_SETTINGS.powerups.invisibility.maxAlpha - GAME_SETTINGS.powerups.invisibility.minAlpha;
-            this.ctx.globalAlpha = GAME_SETTINGS.powerups.invisibility.minAlpha + (pulse * alphaRange);
-        }
-        
-        // Invulnerability flashing
-        if (remotePlayer.invulnerable && Math.floor(Date.now() / 100) % 2 === 0) {
-            this.ctx.globalAlpha = 0.5;
-        }
-        
-        // Reversed controls indicator (yellow question mark)
-        if (remotePlayer.reversed) {
-            const reversePulse = (Math.sin(Date.now() * 0.005) + 1) / 2;
-            this.ctx.fillStyle = '#ffff00';
-            this.ctx.shadowBlur = 15 + reversePulse * 10;
-            this.ctx.shadowColor = '#ffff00';
-            this.ctx.globalAlpha = 0.7 + reversePulse * 0.3;
-            this.ctx.font = 'bold 20px monospace';
-            this.ctx.textAlign = 'center';
-            this.ctx.textBaseline = 'middle';
-            this.ctx.fillText('?', 0, -25);
-            this.ctx.globalAlpha = 1;
-        }
-        
-        // Draw shields
-        if (remotePlayer.shields > 0) {
-            for (let i = 0; i < remotePlayer.shields; i++) {
-                const shieldRadius = size + 8 + (i * 6);
-                const shieldWidth = 2 + i;
-                this.ctx.strokeStyle = '#0066ff';
-                this.ctx.lineWidth = shieldWidth;
-                this.ctx.shadowBlur = 10;
-                this.ctx.shadowColor = '#0066ff';
-                this.ctx.beginPath();
-                this.ctx.arc(0, 0, shieldRadius, 0, Math.PI * 2);
-                this.ctx.stroke();
-            }
-        }
-        
-        // Draw ship body (triangle)
-        this.ctx.beginPath();
-        this.ctx.moveTo(size, 0);
-        this.ctx.lineTo(-size, size / 2);
-        this.ctx.lineTo(-size, -size / 2);
-        this.ctx.closePath();
-        
-        // Fill and outline
-        this.ctx.fillStyle = remotePlayer.color;
-        this.ctx.fill();
-        this.ctx.strokeStyle = remotePlayer.color;
-        this.ctx.lineWidth = 2;
-        this.ctx.stroke();
-        
-        // Add glow effect
-        this.ctx.shadowBlur = 15;
-        this.ctx.shadowColor = remotePlayer.color;
-        this.ctx.stroke();
-        
-        // Draw multishot wings (amber)
-        if (remotePlayer.multiShot) {
-            this.ctx.strokeStyle = '#ffaa00';
-            this.ctx.lineWidth = 3;
-            this.ctx.shadowColor = '#ffaa00';
-            this.ctx.beginPath();
-            this.ctx.moveTo(-5, -size / 2);
-            this.ctx.lineTo(-5, -size / 2 - 5);
-            this.ctx.moveTo(-5, size / 2);
-            this.ctx.lineTo(-5, size / 2 + 5);
-            this.ctx.stroke();
-        }
-        
-        this.ctx.restore();
-        
-        // Draw name above ship (not shown if invisible, unless invulnerable)
-        if (!remotePlayer.invisible || remotePlayer.invulnerable) {
-            this.ctx.save();
-            if (remotePlayer.invisible) {
-                const pulse = (Math.sin(Date.now() * GAME_SETTINGS.powerups.invisibility.pulseSpeed) + 1) / 2;
-                const alphaRange = GAME_SETTINGS.powerups.invisibility.maxAlpha - GAME_SETTINGS.powerups.invisibility.minAlpha;
-                this.ctx.globalAlpha = GAME_SETTINGS.powerups.invisibility.minAlpha + (pulse * alphaRange);
-            }
-            this.ctx.fillStyle = remotePlayer.color;
-            this.ctx.shadowBlur = 5;
-            this.ctx.shadowColor = remotePlayer.color;
-            this.ctx.font = 'bold 12px monospace';
-            this.ctx.textAlign = 'center';
-            this.ctx.fillText(remotePlayer.name, pos.x, pos.y - 25);
-            this.ctx.restore();
-        }
-    }
-    
     update(dt) {
-        // Don't update if no local players
-        if (this.myPlayers.length === 0) return;
+        if (!this.playerManager) return;
         
-        // Update network (spawns power-ups and asteroids in local mode)
-        if (this.network) {
-            this.network.update(dt);
+        // Update network (spawning for local/host mode)
+        if (this.networkFacade) {
+            this.networkFacade.update(dt);
         }
         
-        // Update my local players
-        for (const player of this.myPlayers) {
-            if (player.alive) {
-                player.update(dt, this.canvas.width, this.canvas.height);
-                player.updateBullets(dt, this.canvas.width, this.canvas.height);
-                
-                // Send position update to network (online mode)
-                if (this.network && this.network.constructor.name === 'PeerNetworkManager') {
-                    this.network.sendPlayerUpdate(player.id, {
-                        x: player.x,
-                        y: player.y,
-                        angle: player.angle,
-                        alive: player.alive,
-                        shields: player.shields,
-                        invulnerable: player.invulnerable
-                    });
+        // Update all players
+        this.playerManager.updateAll(dt, this.canvas.width, this.canvas.height);
+        
+        // Send network updates for local players (online mode only)
+        if (this.networkFacade && this.networkFacade.isOnlineMode()) {
+            for (let playerCtrl of this.playerManager.getLocalPlayers()) {
+                if (playerCtrl.alive) {
+                    this.networkFacade.broadcastPlayerUpdate(playerCtrl);
                 }
             }
-        }
-        
-        // Update remote players (online mode)
-        for (const remotePlayer of this.remotePlayers.values()) {
-            remotePlayer.update(dt);
         }
         
         // Update weapons
-        this.homingMissiles = this.homingMissiles.filter(m => m.update(dt, this.canvas.width, this.canvas.height));
-        this.lasers = this.lasers.filter(l => l.update(dt));
+        this.weaponManager.update(dt, this.canvas.width, this.canvas.height);
         
-        // For bombs, pass all players (local + remote) for proximity detection
-        const allPlayers = [...this.myPlayers, ...Array.from(this.remotePlayers.values())];
-        this.bombs = this.bombs.filter(b => {
-            const stillAlive = b.update(dt, this.canvas.width, this.canvas.height, allPlayers);
-            if (b.detonated) {
-                this.handleBombExplosion(b);
-            }
-            return stillAlive;
-        });
-        
-        // Update remote bullets
-        if (!this.remoteBullets) this.remoteBullets = [];
-        this.remoteBullets = this.remoteBullets.filter(b => b.update(dt, this.canvas.width, this.canvas.height));
-        
-        // Update asteroid
-        if (this.asteroid) {
-            if (!this.asteroid.update(dt)) {
-                // Notify network that asteroid was destroyed
-                if (this.network) {
-                    this.network.notifyAsteroidDestroyed();
-                }
-                this.asteroid = null;
-            }
-        }
-        
-        // Update shrapnel
-        this.shrapnel = this.shrapnel.filter(s => s.update(dt, this.canvas.width, this.canvas.height));
-        
-        // Update power-ups and check for pickups
-        this.updatePowerUps(dt);
+        // Update entities (powerups, asteroids, shrapnel)
+        this.entityManager.update(dt);
         
         // Update particles
         this.particles.update(dt, this.canvas.width, this.canvas.height);
         
-        // Collision detection
-        this.checkCollisions();
-    }
-    
-    updatePowerUps(dt) {
-        for (let powerUp of this.powerUps) {
-            powerUp.update(dt);
-            
-            // Check if any player picked it up
-            for (let player of this.myPlayers) {
-                if (player && player.alive) {
-                    const dist = getDistance(
-                        player.x, player.y,
-                        powerUp.x, powerUp.y,
-                        this.canvas.width, this.canvas.height
-                    );
-                    
-                    if (dist < player.radius + powerUp.radius) {
-                        this.applyPowerUp(player, powerUp.type);
-                        powerUp.pickup();
-                        
-                        // Notify network of pickup
-                        if (this.network) {
-                            this.network.sendPowerUpPickup(player.id, powerUp.id, powerUp.type);
-                        }
-                    }
-                }
-            }
-        }
+        // Update references for collision system
+        this.updateManagerReferences();
         
-        // Remove picked up power-ups
-        this.powerUps = this.powerUps.filter(p => p.alive);
-    }
-    
-    applyPowerUp(player, type) {
-        switch(type) {
-            case PowerUpType.SHIELD:
-                player.addShield();
-                break;
-            case PowerUpType.MULTISHOT:
-                player.activateMultiShot();
-                break;
-            case PowerUpType.HOMING:
-                player.loadHoming();
-                break;
-            case PowerUpType.INVISIBILITY:
-                player.activateInvisibility();
-                break;
-            case PowerUpType.LASER:
-                player.loadLaser();
-                break;
-            case PowerUpType.BOMB:
-                player.loadBomb();
-                break;
-            case PowerUpType.REVERSE:
-                player.loadReverse();
-                break;
-            case PowerUpType.ASTEROID_CHASE:
-                player.loadAsteroidChase();
-                break;
-        }
-    }
-    
-    applyPowerUpToRemote(remotePlayer, type) {
-        // Apply powerup effects to remote player (visual updates only)
-        // Remote players don't have full Player class methods, just state
-        switch(type) {
-            case PowerUpType.SHIELD:
-                // Increment shield count (tracked in RemotePlayer)
-                remotePlayer.shields = Math.min((remotePlayer.shields || 0) + 1, 3);
-                break;
-            case PowerUpType.INVISIBILITY:
-                // Mark as invisible (tracked in RemotePlayer)
-                remotePlayer.invisible = true;
-                remotePlayer.invisibleTime = 0;
-                break;
-            case PowerUpType.MULTISHOT:
-                // Mark as having multi-shot (visual effect on ship)
-                remotePlayer.multiShot = true;
-                remotePlayer.multiShotTime = 0;
-                break;
-            // Ammo-based powerups (homing, laser, bomb, reverse, asteroid chase) don't need
-            // visual representation on remote players - they're shown when fired
-        }
-    }
-    
-    checkCollisions() {
-        // Only check collisions for my local players (self-authoritative)
-        // Player vs bullets (from other local players)
-        for (let player of this.myPlayers) {
-            if (!player || !player.alive || player.invulnerable) continue;
-            
-            for (let otherPlayer of this.myPlayers) {
-                if (player === otherPlayer || !otherPlayer || !otherPlayer.bullets) continue;
-                
-                for (let bullet of otherPlayer.bullets) {
-                    if (!bullet.alive) continue;
-                    
-                    const dist = getDistance(
-                        player.x, player.y,
-                        bullet.x, bullet.y,
-                        this.canvas.width, this.canvas.height
-                    );
-                    
-                    if (dist < player.radius + bullet.radius) {
-                        bullet.alive = false;
-                        this.handlePlayerHit(player, otherPlayer);
-                    }
-                }
-            }
-        }
-        
-        // Player vs remote bullets (from remote players)
-        if (this.remoteBullets) {
-            for (let player of this.myPlayers) {
-                if (!player || !player.alive || player.invulnerable) continue;
-                
-                for (let bullet of this.remoteBullets) {
-                    if (!bullet.alive) continue;
-                    
-                    const dist = getDistance(
-                        player.x, player.y,
-                        bullet.x, bullet.y,
-                        this.canvas.width, this.canvas.height
-                    );
-                    
-                    if (dist < player.radius + bullet.radius) {
-                        bullet.alive = false;
-                        // Find attacker from remote players
-                        const attacker = this.remotePlayers.get(bullet.ownerId);
-                        this.handlePlayerHit(player, attacker);
-                    }
-                }
-            }
-        }
-        
-        // Player vs homing missiles (can hit any player including owner)
-        for (let player of this.myPlayers) {
-            if (!player || !player.alive || player.invulnerable) continue;
-            
-            for (let missile of this.homingMissiles) {
-                const dist = getDistance(
-                    player.x, player.y,
-                    missile.x, missile.y,
-                    this.canvas.width, this.canvas.height
-                );
-                
-                if (dist < player.radius + missile.radius) {
-                    missile.alive = false;
-                    // Find attacker (could be local or remote)
-                    let attacker = this.myPlayers.find(p => p.id === missile.ownerId);
-                    if (!attacker) {
-                        attacker = this.remotePlayers.get(missile.ownerId);
-                    }
-                    this.handlePlayerHit(player, attacker);
-                }
-            }
-        }
-        
-        // Player vs lasers
-        for (let player of this.myPlayers) {
-            if (!player || !player.alive || player.invulnerable) continue;
-            
-            for (let laser of this.lasers) {
-                if (laser.ownerId === player.id) continue;
-                
-                if (laser.checkHit(player.x, player.y, player.radius, this.canvas.width, this.canvas.height)) {
-                    // Check if player has shield
-                    if (player.shields > 0) {
-                        player.removeShield();
-                        laser.alive = false; // Laser is destroyed by shield
-                        this.audio.playShieldHit();
-                    } else {
-                        // Find attacker (could be local or remote)
-                        let attacker = this.myPlayers.find(p => p.id === laser.ownerId);
-                        if (!attacker) {
-                            attacker = this.remotePlayers.get(laser.ownerId);
-                        }
-                        this.handlePlayerHit(player, attacker);
-                    }
-                }
-            }
-        }
-        
-        // Player vs shrapnel
-        for (let player of this.myPlayers) {
-            if (!player || !player.alive || player.invulnerable) continue;
-            
-            for (let shard of this.shrapnel) {
-                const dist = getDistance(
-                    player.x, player.y,
-                    shard.x, shard.y,
-                    this.canvas.width, this.canvas.height
-                );
-                
-                if (dist < player.radius + shard.radius) {
-                    shard.alive = false;
-                    
-                    // Check for shields
-                    if (player.shields > 0) {
-                        player.removeShield();
-                        this.audio.playShieldHit();
-                        this.particles.createExplosion(player.x, player.y, '#0066ff', 10, 100);
-                        
-                        // Change direction to move away from shrapnel
-                        const awayAngle = Math.atan2(
-                            player.y - shard.y,
-                            player.x - shard.x
-                        );
-                        player.angle = awayAngle;
-                    } else {
-                        this.handlePlayerHit(player, null);
-                    }
-                }
-            }
-        }
-        
-        // Player vs asteroid
-        if (this.asteroid && this.asteroid.alive) {
-            for (let player of this.myPlayers) {
-                if (!player || !player.alive || player.invulnerable) continue;
-                
-                const dist = getDistance(
-                    player.x, player.y,
-                    this.asteroid.x, this.asteroid.y,
-                    this.canvas.width, this.canvas.height
-                );
-                
-                if (dist < player.radius + this.asteroid.size) {
-                    if (player.shields > 0) {
-                        // Bounce off - change direction to move away
-                        player.removeShield();
-                        this.audio.playShieldHit();
-                        this.particles.createExplosion(player.x, player.y, '#0066ff', 10, 100);
-                        
-                        // Calculate angle away from asteroid
-                        const awayAngle = Math.atan2(
-                            player.y - this.asteroid.y,
-                            player.x - this.asteroid.x
-                        );
-                        
-                        // Set player direction to move away
-                        player.angle = awayAngle;
-                        
-                        // Push player away from asteroid
-                        const pushDistance = (player.radius + this.asteroid.size) - dist + GAME_SETTINGS.collision.asteroidPushDistance;
-                        player.x += Math.cos(awayAngle) * pushDistance;
-                        player.y += Math.sin(awayAngle) * pushDistance;
-                    } else {
-                        this.handlePlayerHit(player, null);
-                    }
-                }
-            }
-        }
-        
-        // Bullets vs asteroid
-        if (this.asteroid && this.asteroid.alive) {
-            // Check if we're host or in local mode
-            const isHostOrLocal = !this.network || 
-                                  this.network.constructor.name === 'LocalNetworkManager' ||
-                                  (this.network.constructor.name === 'PeerNetworkManager' && this.network.isHost);
-            
-            for (let player of this.myPlayers) {
-                if (!player || !player.bullets) continue;
-                for (let bullet of player.bullets) {
-                    if (!bullet.alive) continue;
-                    
-                    const dist = getDistance(
-                        bullet.x, bullet.y,
-                        this.asteroid.x, this.asteroid.y,
-                        this.canvas.width, this.canvas.height
-                    );
-                    
-                    if (dist < bullet.radius + this.asteroid.size) {
-                        bullet.alive = false;
-                        
-                        if (isHostOrLocal) {
-                            // Only host/local applies damage
-                            this.asteroid.takeDamage(bullet.x, bullet.y, 1);
-                            this.particles.createDebris(bullet.x, bullet.y, '#888888', 3);
-                            
-                            // Broadcast damage to clients
-                            if (this.network && this.network.constructor.name === 'PeerNetworkManager') {
-                                this.network.sendAsteroidDamage(bullet.x, bullet.y, 1);
-                            }
-                            
-                            if (!this.asteroid.alive) {
-                                this.particles.createExplosion(this.asteroid.x, this.asteroid.y, '#888888', 20);
-                                // Broadcast destruction to clients
-                                if (this.network) {
-                                    this.network.notifyAsteroidDestroyed();
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        
-        // Remote bullets vs asteroid (only host detects)
-        if (this.asteroid && this.asteroid.alive && this.remoteBullets) {
-            // Check if we're host
-            const isHost = this.network && 
-                          this.network.constructor.name === 'PeerNetworkManager' && 
-                          this.network.isHost;
-            
-            if (isHost) {
-                for (let bullet of this.remoteBullets) {
-                    if (!bullet.alive) continue;
-                    
-                    const dist = getDistance(
-                        bullet.x, bullet.y,
-                        this.asteroid.x, this.asteroid.y,
-                        this.canvas.width, this.canvas.height
-                    );
-                    
-                    if (dist < bullet.radius + this.asteroid.size) {
-                        bullet.alive = false;
-                        
-                        // Host applies damage
-                        this.asteroid.takeDamage(bullet.x, bullet.y, 1);
-                        this.particles.createDebris(bullet.x, bullet.y, '#888888', 3);
-                        
-                        // Broadcast damage to all clients
-                        this.network.sendAsteroidDamage(bullet.x, bullet.y, 1);
-                        
-                        if (!this.asteroid.alive) {
-                            this.particles.createExplosion(this.asteroid.x, this.asteroid.y, '#888888', 20);
-                            // Broadcast destruction to clients
-                            this.network.notifyAsteroidDestroyed();
-                        }
-                    }
-                }
-            }
-        }
-        
-        // Homing missiles vs asteroid
-        if (this.asteroid && this.asteroid.alive) {
-            // Check if we're host or in local mode
-            const isHostOrLocal = !this.network || 
-                                  this.network.constructor.name === 'LocalNetworkManager' ||
-                                  (this.network.constructor.name === 'PeerNetworkManager' && this.network.isHost);
-            
-            for (let missile of this.homingMissiles) {
-                const dist = getDistance(
-                    missile.x, missile.y,
-                    this.asteroid.x, this.asteroid.y,
-                    this.canvas.width, this.canvas.height
-                );
-                
-                if (dist < missile.radius + this.asteroid.size) {
-                    missile.alive = false;
-                    this.audio.playExplosion();
-                    this.particles.createExplosion(missile.x, missile.y, '#ff0000', 20, 200);
-                    
-                    if (isHostOrLocal) {
-                        // Only host/local applies damage
-                        const damage = GAME_SETTINGS.weapons.homingMissile.asteroidDamage;
-                        this.asteroid.takeDamage(missile.x, missile.y, damage);
-                        
-                        // Broadcast damage to clients
-                        if (this.network && this.network.constructor.name === 'PeerNetworkManager') {
-                            this.network.sendAsteroidDamage(missile.x, missile.y, damage);
-                        }
-                        
-                        if (!this.asteroid.alive) {
-                            // Destroyed by missile - create shrapnel
-                            this.shrapnel.push(...this.asteroid.createShrapnel());
-                            this.particles.createExplosion(this.asteroid.x, this.asteroid.y, '#888888', 30);
-                            // Broadcast destruction to clients
-                            if (this.network) {
-                                this.network.notifyAsteroidDestroyed();
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        
-        // Bombs vs bullets (remote detonation)
-        for (let bomb of this.bombs) {
-            if (!bomb.alive) continue;
-            
-            for (let player of this.myPlayers) {
-                if (!player || !player.bullets) continue;
-                for (let bullet of player.bullets) {
-                    if (!bullet.alive) continue;
-                    
-                    const dist = getDistance(
-                        bullet.x, bullet.y,
-                        bomb.x, bomb.y,
-                        this.canvas.width, this.canvas.height
-                    );
-                    
-                    if (dist < bullet.radius + bomb.radius) {
-                        bullet.alive = false;
-                        bomb.detonate();
-                    }
-                }
-            }
-        }
-        
-        // Bombs vs asteroid
-        if (this.asteroid && this.asteroid.alive) {
-            for (let bomb of this.bombs) {
-                if (!bomb.alive) continue;
-                
-                const dist = getDistance(
-                    bomb.x, bomb.y,
-                    this.asteroid.x, this.asteroid.y,
-                    this.canvas.width, this.canvas.height
-                );
-                
-                if (dist < bomb.radius + this.asteroid.size) {
-                    bomb.detonate();
-                }
-            }
-        }
-        
-        // Lasers vs asteroid (blocked but don't damage)
-        if (this.asteroid && this.asteroid.alive) {
-            for (let laser of this.lasers) {
-                if (!laser.alive) continue;
-                
-                // Check if laser beam hits the asteroid
-                if (laser.checkHit(this.asteroid.x, this.asteroid.y, this.asteroid.size, this.canvas.width, this.canvas.height)) {
-                    // Laser is blocked and destroyed
-                    laser.alive = false;
-                    // Create small impact particles where laser hits
-                    this.particles.createDebris(this.asteroid.x, this.asteroid.y, laser.color, 5);
-                }
-            }
-        }
-        
-        // Player vs player collision (only for local players)
-        if (this.myPlayers.length >= 2) {
-            for (let i = 0; i < this.myPlayers.length; i++) {
-                for (let j = i + 1; j < this.myPlayers.length; j++) {
-                    const p1 = this.myPlayers[i];
-                    const p2 = this.myPlayers[j];
-                    
-                    if (!p1 || !p2 || !p1.alive || !p2.alive || p1.invulnerable || p2.invulnerable) continue;
-                    
-                    const dist = getDistance(
-                        p1.x, p1.y,
-                        p2.x, p2.y,
-                        this.canvas.width, this.canvas.height
-                    );
-                    
-                    if (dist < p1.radius + p2.radius) {
-                        // Head-on collision
-                        const p1HasShield = p1.shields > 0;
-                        const p2HasShield = p2.shields > 0;
-                        
-                        if (p1HasShield && p2HasShield) {
-                            // Both have shields - both lose shield and bounce apart
-                            p1.removeShield();
-                            p2.removeShield();
-                            this.audio.playShieldHit();
-                            this.particles.createExplosion(p1.x, p1.y, '#0066ff', 10, 100);
-                            this.particles.createExplosion(p2.x, p2.y, '#0066ff', 10, 100);
-                            
-                            // Calculate collision angle
-                            const collisionAngle = Math.atan2(
-                                p2.y - p1.y,
-                                p2.x - p1.x
-                            );
-                            
-                            // Set players to move away from each other
-                            p1.angle = collisionAngle + Math.PI;
-                            p2.angle = collisionAngle;
-                            
-                            // Push players apart
-                            const overlap = (p1.radius + p2.radius) - dist;
-                            const pushDistance = (overlap / 2) + GAME_SETTINGS.collision.playerPushDistance;
-                            
-                            p1.x -= Math.cos(collisionAngle) * pushDistance;
-                            p1.y -= Math.sin(collisionAngle) * pushDistance;
-                            p2.x += Math.cos(collisionAngle) * pushDistance;
-                            p2.y += Math.sin(collisionAngle) * pushDistance;
-                        } else if (p1HasShield && !p2HasShield) {
-                            // P1 has shield, P2 doesn't - P2 dies, P1 loses shield and bounces
-                            this.handlePlayerHit(p2, p1);
-                            p1.removeShield();
-                            this.audio.playShieldHit();
-                            this.particles.createExplosion(p1.x, p1.y, '#0066ff', 10, 100);
-                            
-                            // P1 bounces away
-                            const awayAngle = Math.atan2(
-                                p1.y - p2.y,
-                                p1.x - p2.x
-                            );
-                            p1.angle = awayAngle;
-                            p1.x += Math.cos(awayAngle) * GAME_SETTINGS.collision.playerPushDistance;
-                            p1.y += Math.sin(awayAngle) * GAME_SETTINGS.collision.playerPushDistance;
-                        } else if (!p1HasShield && p2HasShield) {
-                            // P2 has shield, P1 doesn't - P1 dies, P2 loses shield and bounces
-                            this.handlePlayerHit(p1, p2);
-                            p2.removeShield();
-                            this.audio.playShieldHit();
-                            this.particles.createExplosion(p2.x, p2.y, '#0066ff', 10, 100);
-                            
-                            // P2 bounces away
-                            const awayAngle = Math.atan2(
-                                p2.y - p1.y,
-                                p2.x - p1.x
-                            );
-                            p2.angle = awayAngle;
-                            p2.x += Math.cos(awayAngle) * GAME_SETTINGS.collision.playerPushDistance;
-                            p2.y += Math.sin(awayAngle) * GAME_SETTINGS.collision.playerPushDistance;
-                        } else {
-                            // Neither has shield - both destroyed
-                            this.handlePlayerHit(p1, null);
-                            this.handlePlayerHit(p2, null);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    handlePlayerHit(victim, attacker) {
-        // Check for shields
-        if (victim.shields > 0) {
-            victim.removeShield();
-            this.audio.playShieldHit();
-            this.particles.createExplosion(victim.x, victim.y, '#0066ff', 10, 100);
-            return;
-        }
-        
-        // Player dies
-        victim.die();
-        this.audio.playExplosion();
-        this.particles.createExplosion(victim.x, victim.y, victim.color, 30);
-        
-        // Update score
-        if (attacker) {
-            const currentScore = this.playerScores.get(attacker.id) || 0;
-            this.playerScores.set(attacker.id, currentScore + 1);
-            
-            // Update UI
-            this.ui.updatePlayerScore(attacker.id, currentScore + 1);
-            
-            // Check for win
-            if (currentScore + 1 >= this.winScore && !this.matchWon) {
-                this.endGame(attacker);
-                return;
-            }
-        }
-        
-        // Respawn player (but not if match has been won)
-        if (!this.matchWon) {
-            setTimeout(() => {
-                if (this.state === 'PLAYING' && !this.matchWon) {
-                    const pos = getRandomSpawnPosition(
-                        this.myPlayers,
-                        200,
-                        this.canvas.width,
-                        this.canvas.height
-                    );
-                    victim.respawn(pos.x, pos.y, random(0, Math.PI * 2));
-                }
-            }, victim.respawnDelay * 1000);
-        }
-    }
-    
-    handleBombExplosion(bomb) {
-        this.audio.playExplosion();
-        this.particles.createShockwave(bomb.x, bomb.y, bomb.explosionRadius, bomb.color, 0.6);
-        this.particles.createExplosion(bomb.x, bomb.y, bomb.color, 40, 300);
-        
-        // Damage players in radius
-        for (let player of this.myPlayers) {
-            if (!player || !player.alive || player.invulnerable) continue;
-            
-            const dist = getDistance(
-                player.x, player.y,
-                bomb.x, bomb.y,
-                this.canvas.width, this.canvas.height
-            );
-            
-            if (dist < bomb.explosionRadius) {
-                const attacker = this.myPlayers.find(p => p.id === bomb.ownerId);
-                this.handlePlayerHit(player, attacker);
-            }
-        }
-        
-        // Destroy asteroid
-        if (this.asteroid && this.asteroid.alive) {
-            const dist = getDistance(
-                this.asteroid.x, this.asteroid.y,
-                bomb.x, bomb.y,
-                this.canvas.width, this.canvas.height
-            );
-            
-            if (dist < bomb.explosionRadius) {
-                // Check if we're host or in local mode
-                const isHostOrLocal = !this.network || 
-                                      this.network.constructor.name === 'LocalNetworkManager' ||
-                                      (this.network.constructor.name === 'PeerNetworkManager' && this.network.isHost);
-                
-                if (isHostOrLocal) {
-                    this.asteroid.instantDestroy();
-                    this.shrapnel.push(...this.asteroid.createShrapnel());
-                    this.particles.createExplosion(this.asteroid.x, this.asteroid.y, '#888888', 30);
-                    
-                    // Broadcast destruction to clients
-                    if (this.network) {
-                        this.network.notifyAsteroidDestroyed();
-                    }
-                }
-            }
-        }
-    }
-    
-    
-    endGame(winner) {
-        this.matchWon = true; // Mark that match is won but keep playing
-        this.ui.recordWin(winner.id);
-        this.ui.showGameOver(winner.name, winner.color);
+        // Check collisions (unified for all players)
+        this.collisionSystem.checkAll();
     }
     
     draw() {
         // Draw particles (background layer)
         this.particles.draw(this.ctx);
         
-        // Draw asteroid
-        if (this.asteroid) {
-            this.asteroid.draw(this.ctx);
-        }
+        // Draw entities (asteroids, shrapnel, powerups)
+        this.entityManager.draw(this.ctx);
         
-        // Draw shrapnel
-        this.shrapnel.forEach(s => s.draw(this.ctx));
-        
-        // Draw power-ups
-        this.powerUps.forEach(p => p.draw(this.ctx));
-        
-        // Draw local players
-        for (const player of this.myPlayers) {
-            if (player) {
-                player.draw(this.ctx);
-                player.drawBullets(this.ctx);
-            }
-        }
-        
-        // Draw remote players (online mode)
-        for (const remotePlayer of this.remotePlayers.values()) {
-            if (remotePlayer.alive) {
-                // Draw remote player using their display position
-                this.drawRemotePlayer(remotePlayer);
-            }
-        }
+        // Draw all players (local and remote, unified)
+        this.playerManager.drawAll(this.ctx, this.canvas.width, this.canvas.height);
         
         // Draw weapons
-        this.homingMissiles.forEach(m => m.draw(this.ctx));
-        this.lasers.forEach(l => l.draw(this.ctx, this.canvas.width, this.canvas.height));
-        this.bombs.forEach(b => b.draw(this.ctx));
-        
-        // Draw remote bullets
-        if (this.remoteBullets) {
-            this.remoteBullets.forEach(b => b.draw(this.ctx));
-        }
+        this.weaponManager.draw(this.ctx, this.canvas.width, this.canvas.height);
     }
 }
 
@@ -1560,4 +424,3 @@ class Game {
 window.addEventListener('load', () => {
     new Game();
 });
-
