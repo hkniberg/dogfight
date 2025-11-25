@@ -261,6 +261,13 @@ class Game {
     }
     
     handlePlayerHit(victim, attacker) {
+        // Only handle hits for local players (we are authoritative for our own deaths)
+        // Remote player deaths are handled via network events on their own clients
+        if (victim instanceof RemotePlayer) {
+            console.log('[Game] Ignoring hit on remote player - they are authoritative for their own deaths');
+            return;
+        }
+        
         // Check for shields
         if (victim.shields > 0) {
             victim.removeShield();
@@ -301,6 +308,11 @@ class Game {
                     victim.respawn(pos.x, pos.y, random(0, Math.PI * 2));
                 }
             }, victim.respawnDelay * 1000);
+        }
+        
+        // Send death notification to network
+        if (this.networkFacade && this.networkFacade.isOnlineMode()) {
+            this.networkFacade.broadcastDeath(victim.id, attacker ? attacker.id : null);
         }
     }
     

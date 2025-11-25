@@ -82,7 +82,37 @@ class GameNetworkFacade {
     
     handlePlayerDied(data) {
         console.log(`[GameNetwork] Player ${data.victimId} killed by ${data.killerId}`);
-        // Game handles death directly via handlePlayerHit
+        
+        // Get victim and attacker
+        const victimCtrl = this.game.playerManager.getPlayer(data.victimId);
+        const attackerCtrl = data.killerId ? this.game.playerManager.getPlayer(data.killerId) : null;
+        
+        if (!victimCtrl) {
+            console.warn('[GameNetwork] Victim not found:', data.victimId);
+            return;
+        }
+        
+        // Visual/audio effects for the death
+        this.game.audio.playExplosion();
+        this.game.particles.createExplosion(victimCtrl.x, victimCtrl.y, victimCtrl.color, 30);
+        
+        // Mark remote player as dead (will be set to alive again via network update when they respawn)
+        if (victimCtrl.isRemote()) {
+            victimCtrl.player.alive = false;
+        }
+        
+        // Update score
+        if (attackerCtrl) {
+            const attacker = attackerCtrl.player;
+            const currentScore = this.game.playerScores.get(attacker.id) || 0;
+            this.game.playerScores.set(attacker.id, currentScore + 1);
+            this.game.ui.updatePlayerScore(attacker.id, currentScore + 1);
+            
+            // Check for win
+            if (currentScore + 1 >= this.game.winScore && !this.game.matchWon) {
+                this.game.endGame(attacker);
+            }
+        }
     }
     
     handlePlayerLeft(data) {
