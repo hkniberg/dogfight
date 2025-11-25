@@ -6,12 +6,12 @@
 
 ## Version Control
 - Do NOT commit changes unless explicitly requested by the user
-- Do NOT push changes unless explicitly requested by the user
+- When user says "commit", ALWAYS commit AND push (not just commit)
 - Stage changes and show status when work is complete, but wait for user approval to commit
 
 ## Workflow
 1. Make requested changes
 2. Run linter checks if files were modified
 3. Inform user of changes made
-4. Wait for user to request commit/push if desired
+4. Wait for user to request commit (which means commit + push)
 
