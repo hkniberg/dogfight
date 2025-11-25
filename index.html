@@ -107,17 +107,41 @@
     <!-- PeerJS for P2P multiplayer -->
     <script src="https://unpkg.com/peerjs@1.5.1/dist/peerjs.min.js"></script>
     
+    <!-- Core utilities and settings -->
     <script src="settings.js"></script>
     <script src="utils.js"></script>
+    
+    <!-- Game entities -->
     <script src="particles.js"></script>
     <script src="weapons.js"></script>
     <script src="asteroid.js"></script>
     <script src="powerups.js"></script>
     <script src="spawner.js"></script>
+    
+    <!-- Rendering system -->
+    <script src="rendering/PlayerRenderer.js"></script>
+    
+    <!-- Network layer -->
     <script src="network.js"></script>
+    
+    <!-- Player classes -->
     <script src="player.js"></script>
+    
+    <!-- Manager systems (must load before game.js) -->
+    <script src="managers/PlayerController.js"></script>
+    <script src="managers/PlayerManager.js"></script>
+    <script src="managers/WeaponManager.js"></script>
+    <script src="managers/CollisionSystem.js"></script>
+    <script src="managers/EntityManager.js"></script>
+    
+    <!-- Network facade -->
+    <script src="facades/GameNetworkFacade.js"></script>
+    
+    <!-- UI and Audio -->
     <script src="audio.js"></script>
     <script src="ui.js"></script>
+    
+    <!-- Main game (loads last, depends on all managers) -->
     <script src="game.js"></script>
 </body>
 </html>
