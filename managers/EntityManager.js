@@ -104,12 +104,20 @@ class EntityManager {
     // Update asteroid
     updateAsteroid(dt) {
         if (this.asteroid) {
-            if (!this.asteroid.update(dt)) {
-                // Asteroid destroyed
-                if (this.game.network) {
-                    this.game.network.notifyAsteroidDestroyed();
+            try {
+                if (!this.asteroid.update(dt)) {
+                    // Asteroid destroyed
+                    if (this.game.network) {
+                        this.game.network.notifyAsteroidDestroyed();
+                    }
+                    this.asteroid = null;
                 }
+            } catch (error) {
+                console.error('Error updating asteroid:', error);
+                // Clear asteroid to prevent repeated errors
                 this.asteroid = null;
+                // Re-throw to be caught by game loop
+                throw error;
             }
         }
     }

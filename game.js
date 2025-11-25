@@ -344,9 +344,27 @@ class Game {
         this.drawGrid();
         
         if (this.state === 'PLAYING') {
-            this.update(dt);
-            this.draw();
+            try {
+                this.update(dt);
+                this.draw();
+            } catch (error) {
+                console.error('Game error:', error);
+                this.handleGameError(error);
+            }
         }
+    }
+    
+    handleGameError(error) {
+        // Log detailed error information
+        console.error('Game crashed with error:', error);
+        console.error('Stack trace:', error.stack);
+        
+        // Show error to user
+        const errorMessage = `Game Error: ${error.message}\n\nThe game has encountered an error and needs to return to the menu.\n\nCheck the browser console (F12) for details.`;
+        alert(errorMessage);
+        
+        // Return to menu to recover
+        this.returnToMenu();
     }
     
     drawGrid() {
@@ -422,5 +440,24 @@ class Game {
 
 // Initialize game when page loads
 window.addEventListener('load', () => {
-    new Game();
+    const game = new Game();
+    
+    // Global error handler to catch unhandled errors
+    window.addEventListener('error', (event) => {
+        console.error('Unhandled error:', event.error);
+        if (game && game.state === 'PLAYING') {
+            game.handleGameError(event.error || new Error('Unknown error occurred'));
+            event.preventDefault(); // Prevent default browser error handling
+        }
+    });
+    
+    // Handle unhandled promise rejections
+    window.addEventListener('unhandledrejection', (event) => {
+        console.error('Unhandled promise rejection:', event.reason);
+        if (game && game.state === 'PLAYING') {
+            const error = event.reason instanceof Error ? event.reason : new Error(String(event.reason));
+            game.handleGameError(error);
+            event.preventDefault();
+        }
+    });
 });

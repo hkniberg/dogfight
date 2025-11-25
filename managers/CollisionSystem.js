@@ -10,16 +10,22 @@ class CollisionSystem {
     
     // Main entry point - check all collisions
     checkAll() {
-        this.checkPlayerVsBullets();
-        this.checkPlayerVsHomingMissiles();
-        this.checkPlayerVsLasers();
-        this.checkPlayerVsShrapnel();
-        this.checkPlayerVsAsteroid();
-        this.checkPlayerVsPlayer();
-        this.checkWeaponsVsAsteroid();
-        this.checkBombsVsBullets();
-        this.checkBombsVsAsteroid();
-        this.checkLasersVsAsteroid();
+        try {
+            this.checkPlayerVsBullets();
+            this.checkPlayerVsHomingMissiles();
+            this.checkPlayerVsLasers();
+            this.checkPlayerVsShrapnel();
+            this.checkPlayerVsAsteroid();
+            this.checkPlayerVsPlayer();
+            this.checkWeaponsVsAsteroid();
+            this.checkBombsVsBullets();
+            this.checkBombsVsAsteroid();
+            this.checkLasersVsAsteroid();
+        } catch (error) {
+            console.error('Error in collision detection:', error);
+            // Re-throw to be caught by game loop
+            throw error;
+        }
     }
     
     // Helper: Check if a player can be hit
