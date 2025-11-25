@@ -74,18 +74,17 @@ class Game {
         const canvasWidth = GAME_SETTINGS.canvas.width;
         const canvasHeight = GAME_SETTINGS.canvas.height;
         
-        // Calculate scale to fit window
-        const scaleX = windowWidth / canvasWidth;
-        const scaleY = windowHeight / canvasHeight;
-        const scale = Math.min(scaleX, scaleY);
+        // Reserve space for HUD (approximately 60px)
+        const availableHeight = windowHeight - 60;
         
-        // Apply CSS transform to scale and center
+        // Calculate scale to fit available space
+        const scaleX = windowWidth / canvasWidth;
+        const scaleY = availableHeight / canvasHeight;
+        const scale = Math.min(scaleX, scaleY, 1); // Don't scale up beyond 100%
+        
+        // Apply CSS transform to scale (no absolute positioning - let flexbox handle it)
         this.canvas.style.width = `${canvasWidth * scale}px`;
         this.canvas.style.height = `${canvasHeight * scale}px`;
-        this.canvas.style.position = 'absolute';
-        this.canvas.style.left = '50%';
-        this.canvas.style.top = '50%';
-        this.canvas.style.transform = `translate(-50%, -50%)`;
     }
     
     setupInput() {
