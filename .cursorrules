@@ -1,0 +1,17 @@
+# Cursor Rules for Neon Dogfight Project
+
+## Testing
+- Do NOT perform browser testing unless explicitly requested by the user
+- Skip automatic testing after making changes
+
+## Version Control
+- Do NOT commit changes unless explicitly requested by the user
+- Do NOT push changes unless explicitly requested by the user
+- Stage changes and show status when work is complete, but wait for user approval to commit
+
+## Workflow
+1. Make requested changes
+2. Run linter checks if files were modified
+3. Inform user of changes made
+4. Wait for user to request commit/push if desired
+
