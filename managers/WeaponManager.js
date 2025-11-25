@@ -92,7 +92,8 @@ class WeaponManager {
     
     // Handle asteroid chase power-up
     handleAsteroidChase(playerCtrl, targetPlayer) {
-        if (this.game.asteroid && this.game.asteroid.alive) {
+        const asteroid = this.game.entityManager.asteroid;
+        if (asteroid && asteroid.alive) {
             let chaseTarget = targetPlayer;
             
             if (!chaseTarget) {
@@ -103,9 +104,9 @@ class WeaponManager {
             }
             
             if (chaseTarget) {
-                this.game.asteroid.startChasing(chaseTarget);
+                asteroid.startChasing(chaseTarget);
                 this.game.audio.playPowerUp();
-                this.game.particles.createExplosion(this.game.asteroid.x, this.game.asteroid.y, '#ff00ff', 20, 200);
+                this.game.particles.createExplosion(asteroid.x, asteroid.y, '#ff00ff', 20, 200);
                 
                 // Send to network
                 if (this.game.network && this.game.network.constructor.name === 'PeerNetworkManager') {
