@@ -12,6 +12,8 @@ class NetworkManager {
         this._onPowerUpSpawnedCallback = null;
         this._onPowerUpCollectedCallback = null;
         this._onAsteroidSpawnedCallback = null;
+        this._onAsteroidDamagedCallback = null;
+        this._onAsteroidDestroyedCallback = null;
         this._onPlayerLeftCallback = null;
     }
     
@@ -45,6 +47,14 @@ class NetworkManager {
         throw new Error('sendPowerUpPickup() must be implemented');
     }
     
+    sendAsteroidDamage(x, y, damage) {
+        throw new Error('sendAsteroidDamage() must be implemented');
+    }
+    
+    sendAsteroidDestroyed() {
+        throw new Error('sendAsteroidDestroyed() must be implemented');
+    }
+    
     // Receive event callbacks
     onPlayerJoined(callback) {
         this._onPlayerJoinedCallback = callback;
@@ -76,6 +86,14 @@ class NetworkManager {
     
     onAsteroidSpawned(callback) {
         this._onAsteroidSpawnedCallback = callback;
+    }
+    
+    onAsteroidDamaged(callback) {
+        this._onAsteroidDamagedCallback = callback;
+    }
+    
+    onAsteroidDestroyed(callback) {
+        this._onAsteroidDestroyedCallback = callback;
     }
     
     onPlayerLeft(callback) {
@@ -175,6 +193,16 @@ class LocalNetworkManager extends NetworkManager {
         }
     }
     
+    sendAsteroidDamage(x, y, damage) {
+        // In local mode, damage is handled directly
+        // No need to broadcast
+    }
+    
+    sendAsteroidDestroyed() {
+        // In local mode, destruction is handled directly
+        // No need to broadcast
+    }
+    
     update(dt) {
         // Run spawning logic (acts as local "server")
         
@@ -204,7 +232,7 @@ class LocalNetworkManager extends NetworkManager {
     }
     
     // Called by game when asteroid is destroyed
-    onAsteroidDestroyed() {
+    notifyAsteroidDestroyed() {
         this.activeAsteroid = null;
     }
     
@@ -529,6 +557,22 @@ class PeerNetworkManager extends NetworkManager {
                     this._onAsteroidSpawnedCallback(data.asteroid);
                 }
                 break;
+                
+            case 'asteroid-damaged':
+                if (this._onAsteroidDamagedCallback) {
+                    this._onAsteroidDamagedCallback({
+                        x: data.x,
+                        y: data.y,
+                        damage: data.damage
+                    });
+                }
+                break;
+                
+            case 'asteroid-destroyed':
+                if (this._onAsteroidDestroyedCallback) {
+                    this._onAsteroidDestroyedCallback();
+                }
+                break;
         }
     }
     
@@ -670,6 +714,27 @@ class PeerNetworkManager extends NetworkManager {
         }
     }
     
+    sendAsteroidDamage(x, y, damage) {
+        if (!this.connected || !this.isHost) return;
+        
+        // Only host sends asteroid damage
+        this.broadcast({
+            type: 'asteroid-damaged',
+            x: x,
+            y: y,
+            damage: damage
+        });
+    }
+    
+    sendAsteroidDestroyed() {
+        if (!this.connected || !this.isHost) return;
+        
+        // Only host sends asteroid destruction
+        this.broadcast({
+            type: 'asteroid-destroyed'
+        });
+    }
+    
     update(dt) {
         // Only host runs spawning logic
         if (!this.isHost) return;
@@ -711,9 +776,11 @@ class PeerNetworkManager extends NetworkManager {
         }
     }
     
-    onAsteroidDestroyed() {
+    notifyAsteroidDestroyed() {
+        // Called by game when asteroid is destroyed locally
         if (this.isHost) {
             this.activeAsteroid = null;
+            this.sendAsteroidDestroyed();
         }
     }
     

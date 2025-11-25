@@ -442,6 +442,23 @@ class Game {
         this.network.onAsteroidSpawned((data) => {
             this.asteroid = this.createAsteroidFromData(data);
         });
+        
+        // Asteroid damaged by network
+        this.network.onAsteroidDamaged((data) => {
+            if (this.asteroid && this.asteroid.alive) {
+                this.asteroid.takeDamage(data.x, data.y, data.damage);
+                this.particles.createDebris(data.x, data.y, '#888888', 3);
+            }
+        });
+        
+        // Asteroid destroyed by network
+        this.network.onAsteroidDestroyed(() => {
+            if (this.asteroid && this.asteroid.alive) {
+                this.shrapnel.push(...this.asteroid.createShrapnel());
+                this.particles.createExplosion(this.asteroid.x, this.asteroid.y, '#888888', 30);
+                this.asteroid = null;
+            }
+        });
     }
     
     createWeaponFromNetwork(data) {
@@ -680,7 +697,7 @@ class Game {
             if (!this.asteroid.update(dt)) {
                 // Notify network that asteroid was destroyed
                 if (this.network) {
-                    this.network.onAsteroidDestroyed();
+                    this.network.notifyAsteroidDestroyed();
                 }
                 this.asteroid = null;
             }
@@ -937,6 +954,11 @@ class Game {
         
         // Bullets vs asteroid
         if (this.asteroid && this.asteroid.alive) {
+            // Check if we're host or in local mode
+            const isHostOrLocal = !this.network || 
+                                  this.network.constructor.name === 'LocalNetworkManager' ||
+                                  (this.network.constructor.name === 'PeerNetworkManager' && this.network.isHost);
+            
             for (let player of this.myPlayers) {
                 if (!player || !player.bullets) continue;
                 for (let bullet of player.bullets) {
@@ -950,11 +972,61 @@ class Game {
                     
                     if (dist < bullet.radius + this.asteroid.size) {
                         bullet.alive = false;
-                        // Pass bullet position to show damage hole
+                        
+                        if (isHostOrLocal) {
+                            // Only host/local applies damage
+                            this.asteroid.takeDamage(bullet.x, bullet.y, 1);
+                            this.particles.createDebris(bullet.x, bullet.y, '#888888', 3);
+                            
+                            // Broadcast damage to clients
+                            if (this.network && this.network.constructor.name === 'PeerNetworkManager') {
+                                this.network.sendAsteroidDamage(bullet.x, bullet.y, 1);
+                            }
+                            
+                            if (!this.asteroid.alive) {
+                                this.particles.createExplosion(this.asteroid.x, this.asteroid.y, '#888888', 20);
+                                // Broadcast destruction to clients
+                                if (this.network) {
+                                    this.network.notifyAsteroidDestroyed();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Remote bullets vs asteroid (only host detects)
+        if (this.asteroid && this.asteroid.alive && this.remoteBullets) {
+            // Check if we're host
+            const isHost = this.network && 
+                          this.network.constructor.name === 'PeerNetworkManager' && 
+                          this.network.isHost;
+            
+            if (isHost) {
+                for (let bullet of this.remoteBullets) {
+                    if (!bullet.alive) continue;
+                    
+                    const dist = getDistance(
+                        bullet.x, bullet.y,
+                        this.asteroid.x, this.asteroid.y,
+                        this.canvas.width, this.canvas.height
+                    );
+                    
+                    if (dist < bullet.radius + this.asteroid.size) {
+                        bullet.alive = false;
+                        
+                        // Host applies damage
                         this.asteroid.takeDamage(bullet.x, bullet.y, 1);
                         this.particles.createDebris(bullet.x, bullet.y, '#888888', 3);
+                        
+                        // Broadcast damage to all clients
+                        this.network.sendAsteroidDamage(bullet.x, bullet.y, 1);
+                        
                         if (!this.asteroid.alive) {
                             this.particles.createExplosion(this.asteroid.x, this.asteroid.y, '#888888', 20);
+                            // Broadcast destruction to clients
+                            this.network.notifyAsteroidDestroyed();
                         }
                     }
                 }
@@ -963,6 +1035,11 @@ class Game {
         
         // Homing missiles vs asteroid
         if (this.asteroid && this.asteroid.alive) {
+            // Check if we're host or in local mode
+            const isHostOrLocal = !this.network || 
+                                  this.network.constructor.name === 'LocalNetworkManager' ||
+                                  (this.network.constructor.name === 'PeerNetworkManager' && this.network.isHost);
+            
             for (let missile of this.homingMissiles) {
                 const dist = getDistance(
                     missile.x, missile.y,
@@ -972,15 +1049,28 @@ class Game {
                 
                 if (dist < missile.radius + this.asteroid.size) {
                     missile.alive = false;
-                    // Missiles do extra damage (heavier hit)
-                    this.asteroid.takeDamage(missile.x, missile.y, GAME_SETTINGS.weapons.homingMissile.asteroidDamage);
                     this.audio.playExplosion();
                     this.particles.createExplosion(missile.x, missile.y, '#ff0000', 20, 200);
                     
-                    if (!this.asteroid.alive) {
-                        // Destroyed by missile - create shrapnel
-                        this.shrapnel.push(...this.asteroid.createShrapnel());
-                        this.particles.createExplosion(this.asteroid.x, this.asteroid.y, '#888888', 30);
+                    if (isHostOrLocal) {
+                        // Only host/local applies damage
+                        const damage = GAME_SETTINGS.weapons.homingMissile.asteroidDamage;
+                        this.asteroid.takeDamage(missile.x, missile.y, damage);
+                        
+                        // Broadcast damage to clients
+                        if (this.network && this.network.constructor.name === 'PeerNetworkManager') {
+                            this.network.sendAsteroidDamage(missile.x, missile.y, damage);
+                        }
+                        
+                        if (!this.asteroid.alive) {
+                            // Destroyed by missile - create shrapnel
+                            this.shrapnel.push(...this.asteroid.createShrapnel());
+                            this.particles.createExplosion(this.asteroid.x, this.asteroid.y, '#888888', 30);
+                            // Broadcast destruction to clients
+                            if (this.network) {
+                                this.network.notifyAsteroidDestroyed();
+                            }
+                        }
                     }
                 }
             }
@@ -1203,9 +1293,21 @@ class Game {
             );
             
             if (dist < bomb.explosionRadius) {
-                this.asteroid.instantDestroy();
-                this.shrapnel.push(...this.asteroid.createShrapnel());
-                this.particles.createExplosion(this.asteroid.x, this.asteroid.y, '#888888', 30);
+                // Check if we're host or in local mode
+                const isHostOrLocal = !this.network || 
+                                      this.network.constructor.name === 'LocalNetworkManager' ||
+                                      (this.network.constructor.name === 'PeerNetworkManager' && this.network.isHost);
+                
+                if (isHostOrLocal) {
+                    this.asteroid.instantDestroy();
+                    this.shrapnel.push(...this.asteroid.createShrapnel());
+                    this.particles.createExplosion(this.asteroid.x, this.asteroid.y, '#888888', 30);
+                    
+                    // Broadcast destruction to clients
+                    if (this.network) {
+                        this.network.notifyAsteroidDestroyed();
+                    }
+                }
             }
         }
     }
