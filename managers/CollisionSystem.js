@@ -181,7 +181,8 @@ class CollisionSystem {
     
     // Player vs Asteroid
     checkPlayerVsAsteroid() {
-        if (!this.game.asteroid || !this.game.asteroid.alive) return;
+        const asteroid = this.game.entityManager.asteroid;
+        if (!asteroid || !asteroid.alive) return;
         
         const allPlayers = this.game.playerManager.getAllPlayers();
         
@@ -190,11 +191,11 @@ class CollisionSystem {
             
             const dist = getDistance(
                 playerCtrl.x, playerCtrl.y,
-                this.game.asteroid.x, this.game.asteroid.y,
+                asteroid.x, asteroid.y,
                 this.canvasWidth, this.canvasHeight
             );
             
-            if (dist < playerCtrl.radius + this.game.asteroid.size) {
+            if (dist < playerCtrl.radius + asteroid.size) {
                 if (playerCtrl.shields > 0) {
                     playerCtrl.removeShield();
                     this.game.audio.playShieldHit();
@@ -203,13 +204,13 @@ class CollisionSystem {
                     // Only bounce local players
                     if (playerCtrl.isLocal()) {
                         const awayAngle = Math.atan2(
-                            playerCtrl.y - this.game.asteroid.y,
-                            playerCtrl.x - this.game.asteroid.x
+                            playerCtrl.y - asteroid.y,
+                            playerCtrl.x - asteroid.x
                         );
                         
                         playerCtrl.player.angle = awayAngle;
                         
-                        const pushDistance = (playerCtrl.radius + this.game.asteroid.size) - dist + GAME_SETTINGS.collision.asteroidPushDistance;
+                        const pushDistance = (playerCtrl.radius + asteroid.size) - dist + GAME_SETTINGS.collision.asteroidPushDistance;
                         playerCtrl.player.x += Math.cos(awayAngle) * pushDistance;
                         playerCtrl.player.y += Math.sin(awayAngle) * pushDistance;
                     }
@@ -305,7 +306,8 @@ class CollisionSystem {
     
     // Weapons vs Asteroid
     checkWeaponsVsAsteroid() {
-        if (!this.game.asteroid || !this.game.asteroid.alive) return;
+        const asteroid = this.game.entityManager.asteroid;
+        if (!asteroid || !asteroid.alive) return;
         
         const isHostOrLocal = !this.game.network || 
                               this.game.network.constructor.name === 'LocalNetworkManager' ||
@@ -320,23 +322,23 @@ class CollisionSystem {
                 
                 const dist = getDistance(
                     bullet.x, bullet.y,
-                    this.game.asteroid.x, this.game.asteroid.y,
+                    asteroid.x, asteroid.y,
                     this.canvasWidth, this.canvasHeight
                 );
                 
-                if (dist < bullet.radius + this.game.asteroid.size) {
+                if (dist < bullet.radius + asteroid.size) {
                     bullet.alive = false;
                     
                     if (isHostOrLocal) {
-                        this.game.asteroid.takeDamage(bullet.x, bullet.y, 1);
+                        asteroid.takeDamage(bullet.x, bullet.y, 1);
                         this.game.particles.createDebris(bullet.x, bullet.y, '#888888', 3);
                         
                         if (this.game.network && this.game.network.constructor.name === 'PeerNetworkManager') {
                             this.game.network.sendAsteroidDamage(bullet.x, bullet.y, 1);
                         }
                         
-                        if (!this.game.asteroid.alive) {
-                            this.game.particles.createExplosion(this.game.asteroid.x, this.game.asteroid.y, '#888888', 20);
+                        if (!asteroid.alive) {
+                            this.game.particles.createExplosion(asteroid.x, asteroid.y, '#888888', 20);
                             if (this.game.network) {
                                 this.game.network.notifyAsteroidDestroyed();
                             }
@@ -358,19 +360,19 @@ class CollisionSystem {
                     
                     const dist = getDistance(
                         bullet.x, bullet.y,
-                        this.game.asteroid.x, this.game.asteroid.y,
+                        asteroid.x, asteroid.y,
                         this.canvasWidth, this.canvasHeight
                     );
                     
-                    if (dist < bullet.radius + this.game.asteroid.size) {
+                    if (dist < bullet.radius + asteroid.size) {
                         bullet.alive = false;
                         
-                        this.game.asteroid.takeDamage(bullet.x, bullet.y, 1);
+                        asteroid.takeDamage(bullet.x, bullet.y, 1);
                         this.game.particles.createDebris(bullet.x, bullet.y, '#888888', 3);
                         this.game.network.sendAsteroidDamage(bullet.x, bullet.y, 1);
                         
-                        if (!this.game.asteroid.alive) {
-                            this.game.particles.createExplosion(this.game.asteroid.x, this.game.asteroid.y, '#888888', 20);
+                        if (!asteroid.alive) {
+                            this.game.particles.createExplosion(asteroid.x, asteroid.y, '#888888', 20);
                             this.game.network.notifyAsteroidDestroyed();
                         }
                     }
@@ -382,26 +384,26 @@ class CollisionSystem {
         for (let missile of this.game.homingMissiles) {
             const dist = getDistance(
                 missile.x, missile.y,
-                this.game.asteroid.x, this.game.asteroid.y,
+                asteroid.x, asteroid.y,
                 this.canvasWidth, this.canvasHeight
             );
             
-            if (dist < missile.radius + this.game.asteroid.size) {
+            if (dist < missile.radius + asteroid.size) {
                 missile.alive = false;
                 this.game.audio.playExplosion();
                 this.game.particles.createExplosion(missile.x, missile.y, '#ff0000', 20, 200);
                 
                 if (isHostOrLocal) {
                     const damage = GAME_SETTINGS.weapons.homingMissile.asteroidDamage;
-                    this.game.asteroid.takeDamage(missile.x, missile.y, damage);
+                    asteroid.takeDamage(missile.x, missile.y, damage);
                     
                     if (this.game.network && this.game.network.constructor.name === 'PeerNetworkManager') {
                         this.game.network.sendAsteroidDamage(missile.x, missile.y, damage);
                     }
                     
-                    if (!this.game.asteroid.alive) {
-                        this.game.shrapnel.push(...this.game.asteroid.createShrapnel());
-                        this.game.particles.createExplosion(this.game.asteroid.x, this.game.asteroid.y, '#888888', 30);
+                    if (!asteroid.alive) {
+                        this.game.shrapnel.push(...asteroid.createShrapnel());
+                        this.game.particles.createExplosion(asteroid.x, asteroid.y, '#888888', 30);
                         if (this.game.network) {
                             this.game.network.notifyAsteroidDestroyed();
                         }
@@ -439,18 +441,19 @@ class CollisionSystem {
     
     // Bombs vs Asteroid
     checkBombsVsAsteroid() {
-        if (!this.game.asteroid || !this.game.asteroid.alive) return;
+        const asteroid = this.game.entityManager.asteroid;
+        if (!asteroid || !asteroid.alive) return;
         
         for (let bomb of this.game.bombs) {
             if (!bomb.alive) continue;
             
             const dist = getDistance(
                 bomb.x, bomb.y,
-                this.game.asteroid.x, this.game.asteroid.y,
+                asteroid.x, asteroid.y,
                 this.canvasWidth, this.canvasHeight
             );
             
-            if (dist < bomb.radius + this.game.asteroid.size) {
+            if (dist < bomb.radius + asteroid.size) {
                 bomb.detonate();
             }
         }
@@ -458,14 +461,15 @@ class CollisionSystem {
     
     // Lasers vs Asteroid (blocked but don't damage)
     checkLasersVsAsteroid() {
-        if (!this.game.asteroid || !this.game.asteroid.alive) return;
+        const asteroid = this.game.entityManager.asteroid;
+        if (!asteroid || !asteroid.alive) return;
         
         for (let laser of this.game.lasers) {
             if (!laser.alive) continue;
             
-            if (laser.checkHit(this.game.asteroid.x, this.game.asteroid.y, this.game.asteroid.size, this.canvasWidth, this.canvasHeight)) {
+            if (laser.checkHit(asteroid.x, asteroid.y, asteroid.size, this.canvasWidth, this.canvasHeight)) {
                 laser.alive = false;
-                this.game.particles.createDebris(this.game.asteroid.x, this.game.asteroid.y, laser.color, 5);
+                this.game.particles.createDebris(asteroid.x, asteroid.y, laser.color, 5);
             }
         }
     }

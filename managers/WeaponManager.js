@@ -234,9 +234,10 @@ class WeaponManager {
         }
         
         // Destroy asteroid if in range
-        if (this.game.asteroid && this.game.asteroid.alive) {
+        const asteroid = this.game.entityManager.asteroid;
+        if (asteroid && asteroid.alive) {
             const dist = getDistance(
-                this.game.asteroid.x, this.game.asteroid.y,
+                asteroid.x, asteroid.y,
                 bomb.x, bomb.y,
                 this.game.canvas.width, this.game.canvas.height
             );
@@ -247,9 +248,9 @@ class WeaponManager {
                                       (this.game.network.constructor.name === 'PeerNetworkManager' && this.game.network.isHost);
                 
                 if (isHostOrLocal) {
-                    this.game.asteroid.instantDestroy();
-                    this.game.shrapnel.push(...this.game.asteroid.createShrapnel());
-                    this.game.particles.createExplosion(this.game.asteroid.x, this.game.asteroid.y, '#888888', 30);
+                    asteroid.instantDestroy();
+                    this.game.shrapnel.push(...asteroid.createShrapnel());
+                    this.game.particles.createExplosion(asteroid.x, asteroid.y, '#888888', 30);
                     
                     if (this.game.network) {
                         this.game.network.notifyAsteroidDestroyed();
