@@ -5,6 +5,7 @@ class NetworkManager {
     constructor() {
         // Event callbacks
         this._onPlayerJoinedCallback = null;
+        this._onStateChangeCallback = null;
         this._onPlayerUpdateCallback = null;
         this._onWeaponFiredCallback = null;
         this._onPlayerDiedCallback = null;
@@ -24,6 +25,10 @@ class NetworkManager {
     }
     
     // Send events
+    sendStateChange(playerId, data) {
+        throw new Error('sendStateChange() must be implemented');
+    }
+    
     sendPlayerUpdate(playerId, data) {
         throw new Error('sendPlayerUpdate() must be implemented');
     }
@@ -43,6 +48,10 @@ class NetworkManager {
     // Receive event callbacks
     onPlayerJoined(callback) {
         this._onPlayerJoinedCallback = callback;
+    }
+    
+    onStateChange(callback) {
+        this._onStateChangeCallback = callback;
     }
     
     onPlayerUpdate(callback) {
@@ -130,6 +139,11 @@ class LocalNetworkManager extends NetworkManager {
         this.asteroidSpawner.reset();
     }
     
+    sendStateChange(playerId, data) {
+        // In local mode, state changes are handled directly
+        // No need to broadcast
+    }
+    
     sendPlayerUpdate(playerId, data) {
         // In local mode, we don't need to relay player updates
         // Each player is updated directly in the game loop
@@ -209,19 +223,40 @@ class RemotePlayer {
         this.name = name;
         this.color = color;
         
-        // Current display position (interpolated)
+        // Current display position (interpolated/extrapolated)
         this.displayPos = { x: 0, y: 0, angle: 0 };
         
-        // Target position (from network)
+        // Target position (from network corrections)
         this.targetPos = { x: 0, y: 0, angle: 0 };
+        
+        // Movement state (for extrapolation - Phase 3)
+        this.speedLevel = 0;
+        this.turnState = 0; // -1 = left, 0 = straight, 1 = right
         
         // State
         this.alive = true;
         this.shields = 0;
         this.invulnerable = false;
+        
+        // Canvas dimensions for wrapping
+        this.canvasWidth = 1600;
+        this.canvasHeight = 900;
+    }
+    
+    onStateChange(data) {
+        // Phase 3: Immediate state updates for responsive extrapolation
+        this.speedLevel = data.speedLevel;
+        this.turnState = data.turnState;
+        // Can optionally update position from state change event
+        if (data.x !== undefined) {
+            this.targetPos.x = data.x;
+            this.targetPos.y = data.y;
+            this.targetPos.angle = data.angle;
+        }
     }
     
     onNetworkUpdate(data) {
+        // Position corrections (Phase 2)
         this.targetPos = {
             x: data.x,
             y: data.y,
@@ -233,7 +268,8 @@ class RemotePlayer {
     }
     
     update(dt) {
-        // Smooth interpolation toward target
+        // Phase 2: Simple interpolation toward target
+        // Phase 3: Will add extrapolation based on speedLevel/turnState
         const smoothing = 0.3;
         this.displayPos.x += (this.targetPos.x - this.displayPos.x) * smoothing;
         this.displayPos.y += (this.targetPos.y - this.displayPos.y) * smoothing;

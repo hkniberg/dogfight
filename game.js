@@ -5,9 +5,13 @@ class Game {
         this.canvas = document.getElementById('game-canvas');
         this.ctx = this.canvas.getContext('2d');
         
-        // Set canvas size
-        this.resize();
-        window.addEventListener('resize', () => this.resize());
+        // Set fixed canvas size (required for multiplayer consistency)
+        this.canvas.width = GAME_SETTINGS.canvas.width;
+        this.canvas.height = GAME_SETTINGS.canvas.height;
+        
+        // Scale and center canvas on screen
+        this.updateCanvasScale();
+        window.addEventListener('resize', () => this.updateCanvasScale());
         
         // Game state
         this.state = 'MENU'; // MENU, PLAYING, GAME_OVER
@@ -63,10 +67,25 @@ class Game {
         requestAnimationFrame((time) => this.gameLoop(time));
     }
     
-    resize() {
-        // Make canvas fill the window
-        this.canvas.width = window.innerWidth;
-        this.canvas.height = window.innerHeight;
+    updateCanvasScale() {
+        // Scale canvas to fit window while maintaining aspect ratio
+        const windowWidth = window.innerWidth;
+        const windowHeight = window.innerHeight;
+        const canvasWidth = GAME_SETTINGS.canvas.width;
+        const canvasHeight = GAME_SETTINGS.canvas.height;
+        
+        // Calculate scale to fit window
+        const scaleX = windowWidth / canvasWidth;
+        const scaleY = windowHeight / canvasHeight;
+        const scale = Math.min(scaleX, scaleY);
+        
+        // Apply CSS transform to scale and center
+        this.canvas.style.width = `${canvasWidth * scale}px`;
+        this.canvas.style.height = `${canvasHeight * scale}px`;
+        this.canvas.style.position = 'absolute';
+        this.canvas.style.left = '50%';
+        this.canvas.style.top = '50%';
+        this.canvas.style.transform = `translate(-50%, -50%)`;
     }
     
     setupInput() {
@@ -220,6 +239,9 @@ class Game {
         this.shrapnel = [];
         this.powerUps = [];
         this.particles.clear();
+        
+        // Initialize score display for all players
+        this.ui.initScores(this.myPlayers);
         
         // Update UI
         this.ui.updateScore(this.p1Score, this.p2Score, config.player1.color, config.player2.color);

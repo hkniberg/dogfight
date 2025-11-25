@@ -2,6 +2,13 @@
 // All gameplay constants in one place for easy tweaking
 
 const GAME_SETTINGS = {
+    // === CANVAS SETTINGS (FIXED FOR MULTIPLAYER) ===
+    // All clients must use same dimensions for consistent wrapping behavior
+    canvas: {
+        width: 1600,                // Fixed canvas width (supports 1080p+ screens)
+        height: 900,                // Fixed canvas height (16:9 aspect ratio)
+    },
+    
     // === MATCH SETTINGS ===
     winScore: 3,                    // First to this many kills wins
     respawnDelay: 2,                // Seconds before respawn

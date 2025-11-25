@@ -200,28 +200,45 @@ body {
     top: 0;
     width: 100%;
     display: flex;
-    justify-content: space-between;
+    justify-content: center;
     align-items: center;
     padding: 1rem 2rem;
-    font-size: 2rem;
+    gap: 2rem;
     font-weight: bold;
     pointer-events: none;
     z-index: 10;
 }
 
-#score-left {
-    color: #00FFFF;
-    text-shadow: 0 0 10px currentColor, 0 0 20px currentColor;
+#scores-container {
+    display: flex;
+    gap: 2rem;
+    flex: 1;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.player-score {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.3rem;
+    min-width: 120px;
+}
+
+.player-score .player-name {
+    font-size: 0.9rem;
+    opacity: 0.8;
+}
+
+.player-score .score-value {
+    font-size: 2rem;
 }
 
 #score-center {
     font-size: 1.2rem;
     color: #888;
-}
-
-#score-right {
-    color: #FF1493;
-    text-shadow: 0 0 10px currentColor, 0 0 20px currentColor;
+    position: absolute;
+    right: 2rem;
 }
 
 /* Game Over Screen */

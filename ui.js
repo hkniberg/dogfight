@@ -21,8 +21,8 @@ class UIManager {
         this.totalRoundsDisplay = document.getElementById('total-rounds');
         
         // HUD elements
-        this.p1ScoreDisplay = document.getElementById('p1-score');
-        this.p2ScoreDisplay = document.getElementById('p2-score');
+        this.scoresContainer = document.getElementById('scores-container');
+        this.playerScores = {}; // Map of playerId -> score element
         
         // Game over elements
         this.winnerText = document.getElementById('winner-text');
@@ -69,11 +69,49 @@ class UIManager {
         }
     }
     
+    // Initialize score display for all players
+    initScores(players) {
+        this.scoresContainer.innerHTML = '';
+        this.playerScores = {};
+        
+        players.forEach((player, index) => {
+            const scoreDiv = document.createElement('div');
+            scoreDiv.className = 'player-score';
+            scoreDiv.style.color = player.color;
+            scoreDiv.style.textShadow = `0 0 10px ${player.color}, 0 0 20px ${player.color}`;
+            
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'player-name';
+            nameSpan.textContent = player.name;
+            
+            const scoreSpan = document.createElement('span');
+            scoreSpan.className = 'score-value';
+            scoreSpan.textContent = '0';
+            
+            scoreDiv.appendChild(nameSpan);
+            scoreDiv.appendChild(scoreSpan);
+            this.scoresContainer.appendChild(scoreDiv);
+            
+            this.playerScores[player.id] = scoreSpan;
+        });
+    }
+    
+    // Update individual player score
+    updatePlayerScore(playerId, score) {
+        if (this.playerScores[playerId]) {
+            this.playerScores[playerId].textContent = score;
+        }
+    }
+    
+    // Legacy method for backward compatibility with 2-player mode
     updateScore(p1Score, p2Score, p1Color, p2Color) {
-        this.p1ScoreDisplay.textContent = p1Score;
-        this.p2ScoreDisplay.textContent = p2Score;
-        this.p1ScoreDisplay.parentElement.style.color = p1Color;
-        this.p2ScoreDisplay.parentElement.style.color = p2Color;
+        // This is called by game.js in local mode
+        // Update scores if elements exist
+        const p1Element = this.playerScores[1];
+        const p2Element = this.playerScores[2];
+        
+        if (p1Element) p1Element.textContent = p1Score;
+        if (p2Element) p2Element.textContent = p2Score;
     }
     
     showGameOver(winnerName, winnerColor) {
