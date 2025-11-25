@@ -1039,6 +1039,11 @@ class RemotePlayer {
         while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
         this.displayPos.angle += angleDiff * smoothing;
     }
+    
+    draw(ctx) {
+        // Use PlayerRenderer for consistent rendering
+        PlayerRenderer.drawRemotePlayer(ctx, this);
+    }
 }
 
 
