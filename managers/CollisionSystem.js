@@ -44,17 +44,16 @@ class CollisionSystem {
     }
     
     // Player vs Bullets (all bullets from all sources)
+    // Self-authoritative: only check hits on LOCAL players
     checkPlayerVsBullets() {
-        const allPlayers = this.game.playerManager.getAllPlayers();
+        const localPlayers = this.game.playerManager.getLocalPlayers();
         
-        for (let playerCtrl of allPlayers) {
+        for (let playerCtrl of localPlayers) {
             if (!this.canBeHit(playerCtrl)) continue;
             
-            // Check against local player bullets
-            for (let localPlayerCtrl of this.game.playerManager.getLocalPlayers()) {
-                if (!localPlayerCtrl.player.bullets) continue;
-                
-                for (let bullet of localPlayerCtrl.player.bullets) {
+            // Check against our own bullets (shouldn't hit self)
+            if (playerCtrl.player.bullets) {
+                for (let bullet of playerCtrl.player.bullets) {
                     if (!bullet.alive) continue;
                     if (bullet.ownerId === playerCtrl.id) continue; // Can't hit self
                     
@@ -72,7 +71,29 @@ class CollisionSystem {
                 }
             }
             
-            // Check against remote bullets (from weaponManager or game)
+            // Check against bullets from other local players (local multiplayer)
+            for (let otherPlayerCtrl of localPlayers) {
+                if (otherPlayerCtrl.id === playerCtrl.id) continue;
+                if (!otherPlayerCtrl.player.bullets) continue;
+                
+                for (let bullet of otherPlayerCtrl.player.bullets) {
+                    if (!bullet.alive) continue;
+                    
+                    const dist = getDistance(
+                        playerCtrl.x, playerCtrl.y,
+                        bullet.x, bullet.y,
+                        this.canvasWidth, this.canvasHeight
+                    );
+                    
+                    if (dist < playerCtrl.radius + bullet.radius) {
+                        bullet.alive = false;
+                        const attacker = this.game.playerManager.getPlayer(bullet.ownerId);
+                        this.game.handlePlayerHit(playerCtrl.player, attacker ? attacker.player : null);
+                    }
+                }
+            }
+            
+            // Check against remote bullets (from online opponents)
             if (this.game.remoteBullets) {
                 for (let bullet of this.game.remoteBullets) {
                     if (!bullet.alive) continue;
@@ -95,10 +116,11 @@ class CollisionSystem {
     }
     
     // Player vs Homing Missiles
+    // Self-authoritative: only check hits on LOCAL players
     checkPlayerVsHomingMissiles() {
-        const allPlayers = this.game.playerManager.getAllPlayers();
+        const localPlayers = this.game.playerManager.getLocalPlayers();
         
-        for (let playerCtrl of allPlayers) {
+        for (let playerCtrl of localPlayers) {
             if (!this.canBeHit(playerCtrl)) continue;
             
             for (let missile of this.game.homingMissiles) {
@@ -118,10 +140,11 @@ class CollisionSystem {
     }
     
     // Player vs Lasers
+    // Self-authoritative: only check hits on LOCAL players
     checkPlayerVsLasers() {
-        const allPlayers = this.game.playerManager.getAllPlayers();
+        const localPlayers = this.game.playerManager.getLocalPlayers();
         
-        for (let playerCtrl of allPlayers) {
+        for (let playerCtrl of localPlayers) {
             if (!this.canBeHit(playerCtrl)) continue;
             
             for (let laser of this.game.lasers) {
@@ -142,10 +165,11 @@ class CollisionSystem {
     }
     
     // Player vs Shrapnel
+    // Self-authoritative: only check hits on LOCAL players
     checkPlayerVsShrapnel() {
-        const allPlayers = this.game.playerManager.getAllPlayers();
+        const localPlayers = this.game.playerManager.getLocalPlayers();
         
-        for (let playerCtrl of allPlayers) {
+        for (let playerCtrl of localPlayers) {
             if (!this.canBeHit(playerCtrl)) continue;
             
             for (let shard of this.game.shrapnel) {
@@ -164,13 +188,11 @@ class CollisionSystem {
                         this.game.particles.createExplosion(playerCtrl.x, playerCtrl.y, '#0066ff', 10, 100);
                         
                         // Change direction to move away from shrapnel
-                        if (playerCtrl.isLocal()) {
-                            const awayAngle = Math.atan2(
-                                playerCtrl.y - shard.y,
-                                playerCtrl.x - shard.x
-                            );
-                            playerCtrl.player.angle = awayAngle;
-                        }
+                        const awayAngle = Math.atan2(
+                            playerCtrl.y - shard.y,
+                            playerCtrl.x - shard.x
+                        );
+                        playerCtrl.player.angle = awayAngle;
                     } else {
                         this.game.handlePlayerHit(playerCtrl.player, null);
                     }
@@ -180,13 +202,14 @@ class CollisionSystem {
     }
     
     // Player vs Asteroid
+    // Self-authoritative: only check hits on LOCAL players
     checkPlayerVsAsteroid() {
         const asteroid = this.game.entityManager.asteroid;
         if (!asteroid || !asteroid.alive) return;
         
-        const allPlayers = this.game.playerManager.getAllPlayers();
+        const localPlayers = this.game.playerManager.getLocalPlayers();
         
-        for (let playerCtrl of allPlayers) {
+        for (let playerCtrl of localPlayers) {
             if (!this.canBeHit(playerCtrl)) continue;
             
             const dist = getDistance(
@@ -201,19 +224,17 @@ class CollisionSystem {
                     this.game.audio.playShieldHit();
                     this.game.particles.createExplosion(playerCtrl.x, playerCtrl.y, '#0066ff', 10, 100);
                     
-                    // Only bounce local players
-                    if (playerCtrl.isLocal()) {
-                        const awayAngle = Math.atan2(
-                            playerCtrl.y - asteroid.y,
-                            playerCtrl.x - asteroid.x
-                        );
-                        
-                        playerCtrl.player.angle = awayAngle;
-                        
-                        const pushDistance = (playerCtrl.radius + asteroid.size) - dist + GAME_SETTINGS.collision.asteroidPushDistance;
-                        playerCtrl.player.x += Math.cos(awayAngle) * pushDistance;
-                        playerCtrl.player.y += Math.sin(awayAngle) * pushDistance;
-                    }
+                    // Bounce away from asteroid
+                    const awayAngle = Math.atan2(
+                        playerCtrl.y - asteroid.y,
+                        playerCtrl.x - asteroid.x
+                    );
+                    
+                    playerCtrl.player.angle = awayAngle;
+                    
+                    const pushDistance = (playerCtrl.radius + asteroid.size) - dist + GAME_SETTINGS.collision.asteroidPushDistance;
+                    playerCtrl.player.x += Math.cos(awayAngle) * pushDistance;
+                    playerCtrl.player.y += Math.sin(awayAngle) * pushDistance;
                 } else {
                     this.game.handlePlayerHit(playerCtrl.player, null);
                 }

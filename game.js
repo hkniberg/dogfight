@@ -261,12 +261,8 @@ class Game {
     }
     
     handlePlayerHit(victim, attacker) {
-        // Only handle hits for local players (we are authoritative for our own deaths)
+        // Self-authoritative hit detection: This should only be called for LOCAL players
         // Remote player deaths are handled via network events on their own clients
-        if (victim instanceof RemotePlayer) {
-            console.log('[Game] Ignoring hit on remote player - they are authoritative for their own deaths');
-            return;
-        }
         
         // Check for shields
         if (victim.shields > 0) {
