@@ -13,8 +13,8 @@ Add online multiplayer to Neon Dogfight using a unified architecture where local
 - Trust clients for their own hit detection (friends-only game)
 - **Host player acts as relay + spawning authority** (star topology)
 - Works great for fast-paced arcade combat
-- **Fixed map size:** All players use same canvas dimensions (laptop-friendly)
-- **Win condition:** First to 5 kills (of any player) wins the match
+- **Fixed map size:** All players use same canvas dimensions (required for consistent wrapping behavior)
+- **Win condition:** First to 3 points (matches local mode)
 
 ## Game Modes
 
@@ -39,12 +39,12 @@ Add online multiplayer to Neon Dogfight using a unified architecture where local
 ## Multiplayer Game Rules
 
 **Scoring & Victory:**
-- First to 5 kills (of any player) wins the match
+- First to 3 points wins the match (same as local mode)
 - In free-for-all, killing anyone counts toward your score
 
 **Respawn Mechanics:**
-- Spawn at random location (no safe-spawn validation)
-- 3 seconds of invulnerability (blinking effect)
+- Spawn at random location (no safe-spawn validation initially)
+- 3 seconds of invulnerability (blinking effect) - applies to ALL game modes
 - While invulnerable: cannot shoot or interact with objects
 - Prevents spawn camping and immediate re-death
 
@@ -218,31 +218,36 @@ Client A (Host)             Client B              Client C
 - Visual feedback
 - Animation timing
 
-### Position Updates
+### Position & State Updates
 
-**Send rate:** 20 per second (every 50ms)
+**Hybrid Approach (Optimal for Deterministic Movement):**
 
-**Client-side smoothing:**
-```
-Receive position update → set as target
-Each frame: interpolate current toward target
-Result: Smooth movement despite discrete updates
-```
+**State Change Events (Immediate):**
+- Speed changes, turn state changes → broadcast immediately
+- Low bandwidth (~1-5 events per player per second)
+- Allows clients to extrapolate position deterministically
 
-**Interpolation prevents jitter, extrapolation handles packet loss.**
+**Position Corrections (20 Hz):**
+- Periodic position updates every 50ms
+- Prevents drift from simulation differences
+- Gently corrects extrapolated positions
+
+**Result:** Immediate response to state changes + self-correcting position sync
 
 ### Weapon Synchronization
 
-**Timestamp compensation:**
-```
-Fire event includes game timestamp
-Receiving client compensates for latency:
-  - Calculate time since fire event
-  - Spawn bullet ahead by (speed × time)
-  - Appears in "correct" position despite delay
-```
+**Timestamp System:**
+- Game time = milliseconds since match started
+- Host sends initial sync timestamp when client joins
+- All events include relative game timestamp
 
-**Result:** Bullets feel accurate even with 100ms network delay.
+**Latency Compensation:**
+- Fire events broadcast immediately with timestamp
+- Receiving clients calculate: latency = myGameTime - eventTimestamp
+- Spawn projectile ahead by (speed × latency) to show correct position
+- Lasers/bullets calculated deterministically on each client
+
+**Result:** Weapons feel accurate despite network delay
 
 ### Shared Entity Spawning
 
@@ -252,17 +257,23 @@ Receiving client compensates for latency:
 - When to spawn (random timer)
 - Where to spawn (random position)
 - What to spawn (random type/size)
+- Broadcasts spawn event with timestamp
 
-**All clients obey:**
-- Create identical entity at broadcast position
+**All clients:**
+- Create identical entity from spawn data
+- Compensate for latency using spawn timestamp
 - Run identical physics simulation
 - Results stay in sync
 
 **Pickup handling:**
-- Power-ups have sequence numbers to prevent race conditions
-- First client to touch emits pickup event with sequence number
-- Host validates (sequence matches?) and broadcasts removal
-- All clients remove entity
+- Client picks up → sends pickup event
+- Host validates (does power-up still exist?) and broadcasts removal
+- Race conditions rare (~<1% of pickups), acceptable for now
+- Can add sequence numbers later if needed
+
+**Shrapnel:**
+- Treated like bullets (deterministic simulation on each client)
+- Host broadcasts shrapnel spawn with positions and velocities
 
 ## Code Structure
 
@@ -288,36 +299,33 @@ Receiving client compensates for latency:
 
 ### Modified Files
 
-**game.js** (~150 lines changes)
+**game.js**
 - Replace player1/player2 with myPlayers[] and remotePlayers{}
 - Use NetworkManager for all actions
 - Remove PowerUpManager (replaced by spawner + network events)
 - Add mode parameter to constructor
 - Fixed canvas size (all players use same dimensions)
 
-**ui.js** (~100 lines changes)
+**ui.js**
 - Add mode selection UI
 - Battle code input/display
 - Player name always visible (not just in config)
 - Connection status & ping indicator display
 
-**index.html** (~50 lines changes)
+**index.html**
 - Add PeerJS client script tag
 - Add mode selection radio buttons
 - Battle code input/display field
 - Host/Join UI elements
 - Simplified player config
 
-**settings.js** (minor changes)
+**settings.js**
 - Define fixed CANVAS_WIDTH and CANVAS_HEIGHT constants
-- Shared between client and server
+- Shared between all clients (ensures consistent wrapping behavior)
 
 ### Unchanged Files
 - player.js, weapons.js, asteroid.js, particles.js, audio.js, utils.js
 - All game logic stays the same!
-
-**Total new code:** ~600 lines
-**Optional signaling server:** ~50 lines (can use free PeerJS cloud instead)
 
 ## Implementation Migration Plan
 
@@ -352,44 +360,41 @@ Receiving client compensates for latency:
 
 ### Phase 2.5: Edge Case Handling 
 
-**Goal:** Handle disconnect and synchronization edge cases.
+**Goal:** Handle disconnect and basic synchronization edge cases.
 
 **Tasks:**
 1. Disconnect cleanup (remove projectiles/effects owned by disconnected player)
-2. Sequence numbers for power-up pickups (prevent race conditions)
-3. Respawn mechanics (anywhere on map, invulnerable + can't shoot/interact while blinking)
-4. Relative timestamp synchronization (compensate for join time differences)
+2. Respawn mechanics (random spawn, 3s invulnerable + can't shoot/interact)
+3. Timestamp synchronization (milliseconds since match start)
+4. Test edge cases and add fixes as needed (YAGNI principle)
 
-**Success criteria:** Robust handling of disconnects and edge cases.
+**Success criteria:** Stable multiplayer with basic edge case handling.
 
-### Phase 3: Combat & Synchronization 
+### Phase 3: Polish & Optimization
 
-**Goal:** Full gameplay working online.
+**Goal:** Smooth, responsive gameplay.
 
 **Tasks:**
-1. Implement weapon fire events
-2. Add death detection and broadcasting
-3. Implement score synchronization
-4. Add position interpolation
-5. Add timestamp compensation
+1. Add state change events (speed/turn changes broadcast immediately)
+2. Implement extrapolation (predict remote player positions based on state)
+3. Add position correction blending
+4. Tune smoothing parameters based on testing
+5. Add connection status & ping indicator UI
 
-**Success criteria:** Can play full match online with hits/deaths working.
+**Success criteria:** Smooth, responsive gameplay with minimal perceived lag.
 
-### Phase 4: Polish & Deploy 
+### Phase 4: Deploy 
 
 **Goal:** Production-ready deployment.
 
 **Tasks:**
 1. Polish battle code UI (copy button, visual styling)
 2. Player list display during game
-3. Connection status indicators & ping display
-4. *Optional:* Deploy self-hosted signaling server (Fly.io/Railway free tier)
-5. Test with real network latency from different locations
-6. Deploy static files to GitHub Pages or Vercel
+3. *Optional:* Deploy self-hosted signaling server (Fly.io/Railway free tier)
+4. Test with real network latency from different locations
+5. Deploy static files to GitHub Pages or Vercel
 
-**Success criteria:** Smooth gameplay from different locations, P2P connections work reliably.
-
-**Total estimated time:** 
+**Success criteria:** Smooth gameplay from different locations, P2P connections work reliably. 
 
 ## P2P Architecture Details
 
@@ -412,21 +417,7 @@ Receiving client compensates for latency:
 - Relay game messages (P2P is direct!)
 - Spawn entities
 
-**Example signaling-server.js:**
-```javascript
-const express = require('express');
-const { ExpressPeerServer } = require('peer');
-
-const app = express();
-const server = app.listen(9000);
-
-app.use('/peerjs', ExpressPeerServer(server, {
-  path: '/neon-dogfight'
-}));
-
-console.log('Signaling server running on port 9000');
-```
-
+**Implementation:** Express + PeerJS Server library (~50 lines)
 **Cost:** $0/month on free tiers (Fly.io, Railway, Glitch)
 
 ### Host Client Responsibilities
@@ -444,40 +435,11 @@ console.log('Signaling server running on port 9000');
 - Detect collisions (self-authoritative)
 - Calculate scores (each client maintains)
 
-**Example host state:**
-```javascript
-class PeerNetworkManager {
-  constructor(isHost) {
-    this.isHost = isHost;
-    this.peers = new Map(); // peerId → connection
-    
-    if (isHost) {
-      this.spawner = new PowerUpSpawner();
-      this.asteroidSpawner = new AsteroidSpawner();
-    }
-  }
-  
-  update(dt) {
-    if (this.isHost) {
-      // Host runs spawning
-      this.spawner.update(dt, (powerup) => {
-        this.broadcast({ type: 'spawn-powerup', powerup });
-      });
-    }
-  }
-  
-  broadcast(msg, excludePeer = null) {
-    // Send to all connected peers
-    this.peers.forEach((conn, peerId) => {
-      if (peerId !== excludePeer) {
-        conn.send(msg);
-      }
-    });
-  }
-}
-```
-
-**Per-room spawn loops run at 20 FPS on host client.**
+**Implementation:**
+- Host instantiates spawner classes
+- Runs spawn timers in update loop
+- Broadcasts spawn events to all peers
+- Relays messages between non-host peers
 
 ### P2P Topology Choice: Star vs Mesh
 
@@ -535,236 +497,128 @@ P4 ←→ P5 ←→ P6
 
 ### Game Loop Changes
 
-**Before (local only):**
-```javascript
-update(dt) {
-  player1.update(dt);
-  player2.update(dt);
-  powerUpManager.update(dt);  // Spawns locally
-  checkCollisions();
-}
-```
+**Unified Structure:**
+- `myPlayers[]` - locally controlled players (both in local, one in online)
+- `remotePlayers{}` - network-synchronized remote players (none in local)
+- `network.update(dt)` - runs spawning if local/host, no-op if client
+- All collision detection runs locally on each client
 
-**After (unified):**
-```javascript
-update(dt) {
-  // Update my controlled players
-  myPlayers.forEach(p => {
-    p.update(dt);
-    network.sendPlayerUpdate(p.id, p.serialize());
-  });
-  
-  // Update network (spawns in local/host mode, no-op for non-host clients)
-  network.update(dt);
-  
-  // Update remote players (interpolation)
-  remotePlayers.forEach(p => p.updateInterpolated(dt));
-  
-  // Check collisions (same for all)
-  checkCollisions();
-}
-```
+**Mode Differences:**
+- **Local mode:** myPlayers = [P1, P2], remotePlayers = []
+- **Online (host):** myPlayers = [P1], remotePlayers = [P2, P3, ...], runs spawning
+- **Online (client):** myPlayers = [P1], remotePlayers = [P2, P3, ...], no spawning
 
-**In local mode:** myPlayers = [P1, P2], remotePlayers = []
-**In online mode (host):** myPlayers = [P1], remotePlayers = [P2, P3, ...], runs spawning
-**In online mode (client):** myPlayers = [P1], remotePlayers = [P2, P3, ...], no spawning
+### Remote Player Movement Prediction
 
-### Remote Player Interpolation
+**Extrapolation (Predict Based on State):**
+- State changes (speed/turn) received immediately
+- Each client simulates remote player movement deterministically
+- Periodic position corrections prevent drift
+- Remote players appear ~50ms closer to actual position vs interpolation
 
-```javascript
-class RemotePlayer {
-  onNetworkUpdate(data) {
-    this.targetPos = {x: data.x, y: data.y, angle: data.angle};
-  }
-  
-  update(dt) {
-    // Smooth interpolation toward target
-    this.displayPos.x += (this.targetPos.x - this.displayPos.x) * 0.3;
-    this.displayPos.y += (this.targetPos.y - this.displayPos.y) * 0.3;
-    // Smooth angle interpolation (handle wrapping)
-  }
-  
-  draw(ctx) {
-    // Draw at smoothed position
-  }
-}
-```
+**Phase 2:** Basic position updates (20 Hz) with simple smoothing
+**Phase 3:** Add state change events + extrapolation for responsive feel
 
 ## Deployment
 
 ### Option 1: Use Free PeerJS Cloud (Quickest)
 
-**No deployment needed!** Just use the free PeerJS cloud:
-```javascript
-const peer = new Peer(); // Connects to 0.peerjs.com
-```
+**No deployment needed!** Use the free PeerJS cloud service.
 
 **Pros:** Zero setup, instant start
 **Cons:** Unreliable (community service, no guarantees)
 
 ### Option 2: Self-Host Signaling Server (Recommended)
 
-**Fly.io Free Tier:**
-```bash
-# Install flyctl
-curl -L https://fly.io/install.sh | sh
+**Hosting Options:**
+- Fly.io free tier
+- Railway free tier
+- Glitch free tier
 
-# Create signaling-server.js (see code above)
-npm init -y
-npm install express peer
-
-# Deploy
-fly launch
-fly deploy
-```
-
-**Railway Free Tier:**
-```bash
-# Push to GitHub
-git add signaling-server.js package.json
-git commit -m "Add signaling server"
-
-# Deploy via Railway dashboard
-# Connect GitHub repo, auto-deploys
-```
+**Requirements:**
+- Express + PeerJS Server library
+- No database or configuration needed
+- State is ephemeral (restart = clean slate)
 
 **Cost:** $0/month within free tiers
 
 ### Static File Hosting
 
-**GitHub Pages (Free):**
-```bash
-# Push game files to gh-pages branch
-git checkout -b gh-pages
-git push origin gh-pages
-```
+**Options:**
+- GitHub Pages (free, via gh-pages branch)
+- Vercel (free, single command deploy)
+- Any static file host
 
-**Vercel (Free):**
-```bash
-vercel --prod
-```
-
-### Environment
-- Signaling server needs no configuration
-- Game client points to signaling server URL:
-  ```javascript
-  const peer = new Peer({
-    host: 'your-app.fly.dev',
-    port: 443,
-    path: '/peerjs'
-  });
-  ```
-- No database required
-- State is ephemeral (restart = clean slate)
+Game client configured to point to signaling server URL or free PeerJS cloud.
 
 ### PeerJS Configuration
 
-**Client-side initialization:**
-```javascript
-// Option 1: Free PeerJS cloud (testing/prototype)
-const peer = new Peer();
+**Setup:**
+- Configure PeerJS to use free cloud or self-hosted signaling server
+- Generate battle codes from peer IDs
+- Host listens for incoming connections
+- Clients connect to host using battle code
 
-// Option 2: Self-hosted signaling server (production)
-const peer = new Peer({
-  host: 'your-app.fly.dev',
-  port: 443,
-  path: '/peerjs',
-  secure: true
-});
+**Connection Events:**
+- `peer.on('connection')` - host receives new player
+- `conn.on('open')` - connection established
+- `conn.on('data')` - game message received
+- `conn.on('close')` - player disconnected
 
-// Optional: Custom peer ID (for battle codes)
-const peer = new Peer('battle-code-abc123', {
-  host: 'your-app.fly.dev',
-  port: 443,
-  path: '/peerjs',
-  secure: true
-});
-```
-
-**Connection handling:**
-```javascript
-// Host: Listen for incoming connections
-peer.on('connection', (conn) => {
-  console.log('New player connected:', conn.peer);
-  setupPeerHandlers(conn);
-});
-
-// Client: Connect to host
-const conn = peer.connect('host-peer-id');
-conn.on('open', () => {
-  console.log('Connected to host!');
-  conn.send({ type: 'player-joined', name: 'Bob', color: 'pink' });
-});
-
-conn.on('data', (data) => {
-  // Handle incoming game messages
-  handleGameMessage(data);
-});
-
-conn.on('close', () => {
-  console.log('Disconnected from host');
-  handleDisconnect();
-});
-```
+All game data flows through WebRTC data channels (direct P2P).
 
 ## Testing Strategy
 
-### Local Testing
-1. Refactor to NetworkManager → test local mode works
-2. Test P2P with 2 browser tabs (same machine)
-   - One tab as host, one as client
-   - Can use free PeerJS cloud for testing
-3. Add artificial network lag → test interpolation
-4. Test all power-ups, weapons, edge cases
-5. Test host disconnect scenario
+### Phase 1 Testing
+- Refactor to NetworkManager → verify local mode unchanged
 
-### Remote Testing
-1. Test with 2 devices on same WiFi network
-2. Test with devices on different networks (cellular + WiFi)
-3. Deploy signaling server if using self-hosted
-4. Deploy static files to hosting
-5. Verify smooth gameplay at 50-100ms latency
-6. Tune interpolation parameters if needed
-7. Test NAT traversal (most networks should work, ~90-95% success rate)
+### Phase 2 Testing
+- Two browser tabs (one host, one client) on same machine
+- Use free PeerJS cloud for initial testing
+- Verify connection, basic gameplay, disconnect handling
+
+### Phase 3+ Testing
+- Two devices on same WiFi network
+- Devices on different networks (test NAT traversal)
+- Add artificial lag to tune smoothing parameters
+- Test all power-ups, weapons, edge cases
+- Deploy and test from different locations (50-100ms latency)
 
 ## Performance Expectations
 
-### Signaling Server Load (If Self-Hosted)
-- Connection setup: ~15 KB per player
-- Ongoing heartbeat: ~0.1 KB/sec per player
-- 100 concurrent players: ~10 KB/sec total
-- Minimal CPU/memory usage
+### Signaling Server (If Self-Hosted)
+- Minimal load: ~0.1 KB/sec per player for heartbeats
 - Free tier hosting more than sufficient
+- No game data flows through signaling server
 
-### Host Client Load
-- Star topology: Host relays messages between peers
-- 10 players: ~2 KB/sec × 9 connections = 18 KB/sec
-- Modest CPU for spawning logic
-- Any modern device can handle it
+### Host Client
+- Star topology: relays messages between peers
+- Modest bandwidth: ~2 KB/sec per player
+- Light CPU load for spawning logic
+- Any modern device handles 2-10 players easily
 
 ### Network Requirements
-- <50ms latency = excellent, <150ms = playable
-- ~2 KB/sec per player (minimal bandwidth)
-- P2P direct connection = lower latency than relay server
-- NAT traversal works for ~90-95% of networks
+- Latency: <50ms excellent, <150ms playable
+- Bandwidth: ~2 KB/sec per player (minimal)
+- P2P direct connections = lower latency than server relay
+- NAT traversal: most networks work, test in Phase 2
 
 ## Known Behaviors
 
-### Expected "Quirks"
-- Remote players may be ±30 pixels off between screens (interpolation hides this)
-- Occasional controversial hit (~5% of cases) - victim's view is authoritative
+### Expected Quirks
+- Remote players may be ±30 pixels off between screens (extrapolation hides this)
+- Occasional controversial hit - victim's view is authoritative
 - Brief position snap on disconnect/reconnect
-- **Host disconnect ends the game** (all players return to menu)
-- NAT/firewall issues for ~5-10% of networks (P2P can't connect)
+- **Host disconnect ends the game** (all return to menu)
+- Some networks may have NAT/firewall issues (test in Phase 2)
 
 ### Why These Are Acceptable
-- Fast gameplay masks position uncertainty
-- Quick respawns minimize frustration
-- Visual effects (glow, particles) hide deviations
-- Arcade game feel embraces chaos
-- Trust-based system (friends-only, no anti-cheat needed)
-- Host disconnect is rare (friends coordinate who hosts)
-- Failed P2P connections can retry or use different network
+- Fast arcade gameplay masks position uncertainty
+- Quick respawns (3s) minimize frustration
+- Visual effects hide minor deviations
+- Trust-based system (friends-only game)
+- Host disconnect rare (friends coordinate)
+- YAGNI principle: add fixes only if issues arise during testing
 
 ## Key Decisions Summary
 
@@ -816,22 +670,23 @@ conn.on('close', () => {
 
 ### Phase 2.5: Edge Cases
 - [ ] Disconnect cleanup (remove player projectiles/effects)
-- [ ] Power-up sequence numbers (prevent pickup race conditions)
-- [ ] Respawn mechanics (invulnerability, no shoot/interact)
-- [ ] Relative timestamp synchronization
+- [ ] Respawn mechanics (3s invulnerability, no shoot/interact)
+- [ ] Timestamp synchronization (milliseconds since match start)
+- [ ] Test edge cases and fix as needed
 
-### Phase 3: Refinement
-- [ ] Add position interpolation
-- [ ] Add timestamp compensation for weapons
+### Phase 3: Polish & Optimization
+- [ ] Add state change events (speed/turn)
+- [ ] Implement extrapolation for remote players
+- [ ] Add position correction blending
+- [ ] Tune smoothing parameters
 - [ ] Add connection status & ping indicator UI
 
-### Phase 4: Deployment
-- [ ] Deploy static files to GitHub Pages/Vercel
+### Phase 4: Deploy
+- [ ] Polish battle code UI
+- [ ] Player list display
 - [ ] Optional: Deploy signaling server to Fly.io/Railway
-- [ ] Test with real network latency from different locations
-- [ ] Verify NAT traversal success rate
-- [ ] Tune interpolation parameters
-- [ ] Document deployment setup
+- [ ] Deploy static files to GitHub Pages/Vercel
+- [ ] Test from different locations with real network latency
 
 ## P2P Message Protocol
 
@@ -841,26 +696,30 @@ All messages are JSON objects sent via `connection.send(msg)`.
 
 **Client → Host:**
 - `{type: 'player-joined', id, name, color}` (on connection)
-- `{type: 'player-update', id, x, y, angle, alive, shields, ...}`
-- `{type: 'fire-weapon', ownerId, weaponType, x, y, angle, timestamp}`
-- `{type: 'i-died', victimId, killerId}`
-- `{type: 'pickup-powerup', playerId, powerupId, seq}`
+- `{type: 'state-change', id, speed, turnState, x, y, angle, timestamp}` (immediate)
+- `{type: 'position-correction', id, x, y, angle, timestamp}` (20 Hz)
+- `{type: 'fire-weapon', ownerId, weaponType, x, y, angle, timestamp}` (immediate)
+- `{type: 'i-died', victimId, killerId}` (immediate)
+- `{type: 'pickup-powerup', playerId, powerupId}` (immediate)
 
 **Host → Client(s):**
+- `{type: 'sync-time', gameTime}` (on join)
 - `{type: 'game-state', players, powerups, asteroids}` (on join)
-- `{type: 'player-joined', id, name, color}` (relay to others)
-- `{type: 'player-update', id, x, y, angle, ...}` (relay)
-- `{type: 'weapon-fired', ownerId, weaponType, x, y, angle, timestamp}` (relay)
+- `{type: 'player-joined', id, name, color}` (relay)
+- `{type: 'state-change', ...}` (relay)
+- `{type: 'position-correction', ...}` (relay)
+- `{type: 'weapon-fired', ...}` (relay)
 - `{type: 'player-died', victimId, killerId}` (relay)
-- `{type: 'powerup-spawned', id, x, y, type, seq}` (host authority)
-- `{type: 'powerup-collected', id, playerId}` (relay)
-- `{type: 'asteroid-spawned', id, x, y, vx, vy, size, points}` (host authority)
-- `{type: 'player-left', id}` (when peer disconnects)
+- `{type: 'powerup-spawned', id, x, y, type, timestamp}` (host authority)
+- `{type: 'powerup-removed', id}` (host authority)
+- `{type: 'asteroid-spawned', id, x, y, vx, vy, size, points, timestamp}` (host authority)
+- `{type: 'player-left', id}` (on disconnect)
 
 ### Update Rates
-- Player positions: 20/sec (50ms interval)
-- Weapons/deaths: immediate (event-based)
-- Host spawns: immediate broadcast
+- State changes: immediate (1-5/sec per player)
+- Position corrections: 20/sec
+- Weapons/deaths: immediate
+- Host spawns: immediate
 - All data flows through WebRTC data channels (direct P2P)
 
 ## Implementation Notes
@@ -869,81 +728,33 @@ All messages are JSON objects sent via `connection.send(msg)`.
 
 **Critical:** LocalNetworkManager and PeerNetworkManager (host mode) use identical spawning code.
 
-```javascript
-// spawner.js - used by both!
-class PowerUpSpawner {
-  update(dt, onSpawn) {
-    if (shouldSpawn()) {
-      onSpawn({
-        id: generateId(),
-        seq: 0,  // Sequence number for pickup validation
-        type: randomType(),
-        x: randomX(),
-        y: randomY()
-      });
-    }
-  }
-}
-
-// LocalNetworkManager (local 2-player)
-spawner.update(dt, (powerup) => {
-  this._onPowerUpSpawned(powerup);
-});
-
-// PeerNetworkManager (host in P2P)
-if (this.isHost) {
-  spawner.update(dt, (powerup) => {
-    // Broadcast to all connected peers
-    this.broadcast({ type: 'powerup-spawned', powerup });
-    // Also spawn locally for host
-    this._onPowerUpSpawned(powerup);
-  });
-}
-```
-
-**Guarantees:** Same spawn behavior in local and online modes.
+**spawner.js** contains:
+- PowerUpSpawner class with update(dt, onSpawn) callback
+- AsteroidSpawner class with same pattern
+- Called by LocalNetworkManager OR host client
+- Guarantees identical spawn behavior across modes
 
 ### Timestamp Compensation
 
-**For accurate weapon placement despite lag:**
+**Game Time Sync:**
+- Host tracks: matchStartTime = Date.now()
+- Each frame: gameTime = Date.now() - matchStartTime
+- Client joins → receives current gameTime → calculates own offset
+- All events include gameTime timestamp
 
-```javascript
-// Use relative timestamps (compensate for different join times)
-// Server provides joinTimestamp on connection
-// Client: serverGameTime = localGameTime + joinTimestamp
+**Weapon Placement:**
+- Sender includes timestamp with fire event
+- Receiver calculates: latency = myGameTime - eventTimestamp
+- Spawns projectile ahead by (speed × latency)
+- Appears in correct position despite network delay
 
-// Sender includes relative timestamp
-emit('fire-weapon', {x, y, angle, timestamp: serverGameTime});
+### Movement Prediction
 
-// Receiver compensates
-latency = myServerGameTime - data.timestamp;
-adjustedX = data.x + cos(angle) * speed * latency;
-createBullet(adjustedX, adjustedY, angle);
-```
-
-Makes bullets appear where they "should be" given the delay.
-
-### Position Interpolation
-
-**For smooth remote player movement:**
-
-```javascript
-onNetworkUpdate(data) {
-  remotePlayer.target = data; // Where they are
-}
-
-update(dt) {
-  // Smoothly move toward target
-  remotePlayer.display.x += (target.x - display.x) * 0.3;
-  remotePlayer.display.y += (target.y - display.y) * 0.3;
-}
-
-draw() {
-  drawAt(remotePlayer.display); // Use smoothed position
-}
-```
-
-Hides network jitter, creates smooth motion.
+**Extrapolation Strategy:**
+- Remote player state (speed, turnState, angle) received immediately
+- Each client simulates remote movement deterministically
+- Periodic position corrections prevent drift accumulation
+- Smoothing factor blends simulation with corrections
 
 ## P2P vs Traditional Server: Comparison
 
